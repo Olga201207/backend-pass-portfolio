@@ -22,7 +22,7 @@ jobs:
         distribution: 'adopt'
     
     - name: Build with Gradle
-      run:
+      run: |
         chmod +x ./gradlew
         ./gradlew build
     
