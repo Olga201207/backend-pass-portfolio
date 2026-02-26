@@ -12,6 +12,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -36,7 +37,12 @@ public class ImprovedOrderService {
         return statsPage.map(this::toOrderStatisticsResponse);
     }
 
-    //    @Scheduled(cron = "0 */3 * * * *")
+    // 1. OrderStats 를 만듦
+    // 2. Scheduled 를 이용해서 주기적으로 담아주자.
+    // 3. Order 데이터와 member 를 조인해서 만든 값을 담아주자.
+    // 4. API 호출시에 OrderStats 를 조회해서 내려주기로 결정.
+
+    @Scheduled(cron = "0 */3 * * * *")
     @Transactional
     public void refreshOrderStatistics() {
         log.info("Starting order statistics refresh at {}", LocalDateTime.now());
@@ -94,7 +100,7 @@ public class ImprovedOrderService {
                 .status(order.getStatus())
                 .orderDate(order.getOrderDate())
                 .totalAmount(order.getTotalAmount())
-                .totalItems(order.getTotalItems())
+                .totalItems(order.getTotalItems()) // 이 로직을 유지하기 위해서는 업데이트 로직이 추가로 설계되어야 한다.
                 .build();
     }
 } 

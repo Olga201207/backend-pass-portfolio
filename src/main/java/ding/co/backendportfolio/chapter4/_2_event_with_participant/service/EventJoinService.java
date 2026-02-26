@@ -21,6 +21,14 @@ public class EventJoinService {
     private final EventParticipantRepository participantRepository;
     private final MemberRepository memberRepository;
 
+    // 1. EventParticipant insert(S lock)
+    // 2. Event Update(X lock)
+    //      => 데드락 발생
+
+    // 1. Event Update(X lock)
+    // 2. EventParticipant insert(S lock)
+    //      => 데드락 발생 X
+
     @Transactional
     public void joinEvent(Long eventId, Long memberId) {
         // 1. 이벤트와 회원 정보 조회
@@ -32,7 +40,7 @@ public class EventJoinService {
 
         // 2. 이벤트 참가자 수 증가 (내부적으로 참가 가능 여부 검증)
         event.increaseParticipants();
-        eventRepository.save(event);
+        eventRepository.saveAndFlush(event);
 
         // 3. 참가자 정보 저장
         EventParticipant participant = EventParticipant.builder()

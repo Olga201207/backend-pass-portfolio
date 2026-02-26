@@ -43,6 +43,9 @@ public class ConcurrentTestUtil {
         executorService.shutdown();
     }
 
+    // event id 1
+    // members size = 100
+    // 100개의 스레드를 만들어서
     public static void executeConcurrentJoins(
             Long eventId,
             List<Member> members,
@@ -51,7 +54,11 @@ public class ConcurrentTestUtil {
         ExecutorService executorService = Executors.newFixedThreadPool(32);
         CountDownLatch latch = new CountDownLatch(members.size());
 
+        // 32개 thread pool 에서 100개의 요청을 동시(이론적으로 32개씩만 동시에 가능하겠지만)에 수행
+        // 32개가 충돌이 많이 발생할 테니까 -> 낙관적 락보다 성능이 괜찮을 수 있음
         for (int i = 0; i < members.size(); i++) {
+            // 각 스레드에서 i 번째 member 를 이벤트에 참여하도록 만든다.
+            // eventJoinTask 의 인터페이스를 따라서 조인하게 만든다.
             final int index = i;
             executorService.submit(() -> {
                 try {

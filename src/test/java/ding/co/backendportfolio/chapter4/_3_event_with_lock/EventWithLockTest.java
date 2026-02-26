@@ -1,5 +1,7 @@
 package ding.co.backendportfolio.chapter4._3_event_with_lock;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import ding.co.backendportfolio.chapter2.entity.Member;
 import ding.co.backendportfolio.chapter2.repository.MemberRepository;
 import ding.co.backendportfolio.chapter4._3_event_with_lock.entity.EventWithLock;
@@ -11,13 +13,13 @@ import ding.co.backendportfolio.chapter4._4_event_with_external.repository.Event
 import ding.co.backendportfolio.chapter4.fixture.Chapter4Fixture;
 import ding.co.backendportfolio.chapter4.fixture.ConcurrentTestUtil;
 import ding.co.backendportfolio.config.IntegrationTest;
-import lombok.extern.slf4j.Slf4j;
-import org.junit.jupiter.api.*;
-import org.springframework.beans.factory.annotation.Autowired;
-
 import java.util.List;
-
-import static org.assertj.core.api.Assertions.assertThat;
+import lombok.extern.slf4j.Slf4j;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @Slf4j
 @IntegrationTest
@@ -77,7 +79,8 @@ class EventWithLockTest {
         assertThat(event.getCurrentParticipants()).isEqualTo(THREAD_COUNT);
     }
 
-    @Disabled
+    // @Disabled
+    @Test
     @DisplayName("네임드 락으로 100명 동시 참가 테스트")
     void namedLockTest() throws InterruptedException {
         // when

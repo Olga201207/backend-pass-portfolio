@@ -25,9 +25,24 @@ public class EventWithLock {
     private int maxParticipants;
     private int currentParticipants;
 
+    // 낙관적 락을 사용할 때, 사용되는 필드
+    // 동시성을 제어하는 방식으로 버전 번호를 활용해서 데이터 변경 충돌을 감지하도록 구현
+    // spring 과 jpa 내에서는 버전 어노테이션(@Version)을 통해서 구현 가능
+    // 이 버전 필드는 엔티티가 수정될 때마다 자동으로 증가하는 구조
     @Version
     private Long version;
 
+    // 낙관적 락 상황 예시
+    // event(id = 1, current_participants = 0, version = 100)
+    // Transaction 1
+    // UPDATE event SET current_participants += 1 and version += 1 where id = 1 and version = 100;
+    // => event(id = 1, current_participants = 1, version = 101)
+    // Transaction 2
+    // UPDATE event SET current_participants += 1 where id = 1 and version = 100;
+    //   => updatedRows = 0 -> 다른 transaction이 해당 버전의 record에 update를 수행함
+    //   => version 값이 달라서 수행 안됨
+    //   => version 값 올려서 재시도 수행해야함 (구현해야 함)
+    // UPDATE event SET current_participants += 1 and version += 1 where id = 1 and version = 101;
     @CreatedDate
     private LocalDateTime createdAt;
 
