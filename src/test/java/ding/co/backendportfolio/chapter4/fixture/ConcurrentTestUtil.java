@@ -26,6 +26,13 @@ public class ConcurrentTestUtil {
         ExecutorService executorService = Executors.newFixedThreadPool(32);
         CountDownLatch latch = new CountDownLatch(events.size());
 
+        // events 0, 1, 2, 3, 4 ...
+        // members 0, 1, 2, 3, 4 ...
+        // members[1] -> events[1]
+        // members[2] -> events[2]
+        // => 서로 충돌나지 않음
+        // 데이터 정합성에 대한 검증 아님
+        // 트랜잭션의 범위를 어떻게 좁혀서 어플리케이션 상 성능을 개선할지를 확인하기 위함
         for (int i = 0; i < events.size(); i++) {
             final int index = i;
             executorService.submit(() -> {

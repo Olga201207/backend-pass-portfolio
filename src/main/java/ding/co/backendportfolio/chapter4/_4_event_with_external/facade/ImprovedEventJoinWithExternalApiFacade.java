@@ -22,6 +22,7 @@ public class ImprovedEventJoinWithExternalApiFacade {
     private final KakaoTalkMessageApi kakaoTalkMessageApi;
     private final EventWithLockRepository eventRepository;
 
+    // transactional 안 붙어있음
     public void joinEvent(Long eventId, Long memberId) {
         // 0. 이벤트 정보 조회 (읽기 전용)
         EventWithLock event = eventRepository.findById(eventId)

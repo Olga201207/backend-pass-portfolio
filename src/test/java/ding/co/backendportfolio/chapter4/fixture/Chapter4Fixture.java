@@ -65,6 +65,7 @@ public class Chapter4Fixture {
     }
 
     // Participant 관련 픽스처
+    // external id 없음
     public static EventWithLockParticipant createTestParticipant(EventWithLock event, Member member) {
         return EventWithLockParticipant.builder()
                 .event(event)

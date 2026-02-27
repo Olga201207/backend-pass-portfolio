@@ -37,6 +37,7 @@ public class EventWithLockService {
         //      => 자동으로 재시도하는 로직이 코드상에 구현이 되어있어야 함
         //      => 이 프로젝트에서는 OptimisticLockEventFacade 에 구현되어있음
         // 2-2. 이벤트 버전이 일치한다면, 참가자 수를 늘리기
+        // saveAndFlush가 낙관적 lock 코드에 존재하는 이유, entity를 찾아올 때 선제적으로 lock을 잡는 것이 아니기 때문에 데드락이 발생핼 수 있음
         // saveAndFlush 적용 이유: eventParticipants의 eventId 외래키로 인해 공유락이 record 단위로 설정됨, event 객체(record)의 특정 필드 값 update해야함(x - lock 필요). 다른 놈(동일 메서드 실행하는 다른 transaction)이 공유락 갖고 안놓아주고 있어서 dead lock 발생
         // jpa 특성상 insert 작업이 먼저 실행되기 때문에, 명시적으로 update(increaseParticipants) 가 먼저 실행 되도록 saveAndFlush 적용
         event.increaseParticipants();

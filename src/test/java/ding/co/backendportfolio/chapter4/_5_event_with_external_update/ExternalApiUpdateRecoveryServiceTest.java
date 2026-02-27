@@ -1,7 +1,15 @@
 package ding.co.backendportfolio.chapter4._5_event_with_external_update;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+
 import ding.co.backendportfolio.chapter2.entity.Member;
 import ding.co.backendportfolio.chapter2.repository.MemberRepository;
+import ding.co.backendportfolio.chapter3improved.repository.ImprovedOrderRepository;
 import ding.co.backendportfolio.chapter4._3_event_with_lock.entity.EventWithLock;
 import ding.co.backendportfolio.chapter4._3_event_with_lock.entity.EventWithLockParticipant;
 import ding.co.backendportfolio.chapter4._3_event_with_lock.repository.EventWithLockRepository;
@@ -12,6 +20,9 @@ import ding.co.backendportfolio.chapter4._4_event_with_external.service.EventExt
 import ding.co.backendportfolio.chapter4._5_event_with_external_update.service.ExternalApiUpdateRecoveryService;
 import ding.co.backendportfolio.chapter4.fixture.Chapter4Fixture;
 import ding.co.backendportfolio.config.IntegrationTest;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -20,14 +31,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.mock.mockito.SpyBean;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.UUID;
-
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.*;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 
 @Slf4j
@@ -41,6 +45,10 @@ class ExternalApiUpdateRecoveryServiceTest {
     private EventWithLockRepository eventRepository;
     @Autowired
     private MemberRepository memberRepository;
+    @Autowired
+    private ImprovedOrderRepository improvedOrderRepository; // ch3_improved_orders 테이블용
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
     @SpyBean
     private ExternalEventApi externalEventApi;
     @MockBean
@@ -108,6 +116,7 @@ class ExternalApiUpdateRecoveryServiceTest {
         verify(eventJoinService, never()).updateExternalId(any(), any());
     }
 
+    // fixture 객체
     @Test
     @DisplayName("scheduled 메서드가 여러 참가자를 처리")
     void recoverMissingExternalIds_MultipleParticipants() {
@@ -134,7 +143,10 @@ class ExternalApiUpdateRecoveryServiceTest {
     @AfterEach
     void tearDown() {
         participantRepository.deleteAllInBatch();
+        improvedOrderRepository.deleteAllInBatch();
+        jdbcTemplate.execute("SET FOREIGN_KEY_CHECKS = 0");
         memberRepository.deleteAllInBatch();
+        jdbcTemplate.execute("SET FOREIGN_KEY_CHECKS = 1");
         eventRepository.deleteAllInBatch();
     }
 } 

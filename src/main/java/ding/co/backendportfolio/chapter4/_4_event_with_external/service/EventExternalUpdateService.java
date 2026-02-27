@@ -20,9 +20,12 @@ public class EventExternalUpdateService {
     private final EventWithLockParticipantRepository participantRepository;
     private final MemberRepository memberRepository;
 
+    // ImprovedEventJoinWithExternalApiFacade 에 의해 호출
+    // 외부 api 호출 등의 로직을 제외한 db 업데이트 작업만 transaction 범위에 포함
     @Transactional
     public EventWithLockParticipant joinEventWithTransaction(Long eventId, Long memberId) {
         // 1. 이벤트와 회원 정보 조회
+        // 낙관적 락 적용
         EventWithLock event = eventRepository.findByIdWithOptimisticLock(eventId)
                 .orElseThrow(() -> new EntityNotFoundException("이벤트를 찾을 수 없습니다."));
         Member member = memberRepository.findById(memberId)

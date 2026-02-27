@@ -5,7 +5,7 @@ spring:
     password: ${RDS_PASSWORD:portfolio1234}
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
-      maximum-pool-size: 64
+      maximum-pool-size: 32
     # db connection pool = thread pool * 2
     # transaction -> transaction(Propagation.REQUIRES_NEW) : 2개의 db connection 필요
     # thread -> 2개의 db connection pool 사용

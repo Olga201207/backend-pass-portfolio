@@ -10,6 +10,7 @@ import java.util.Random;
 public class KakaoTalkMessageApi {
     private static final Random random = new Random();
 
+    // phoneNumber와 eventName을 받아서 카카오톡 알림을 발송했다 라는 행위를 하는 외부 api 호출을 가정한 기능
     public void sendEventJoinMessage(String phoneNumber, String eventName) {
         try {
             Thread.sleep(random.nextInt(500, 1500));

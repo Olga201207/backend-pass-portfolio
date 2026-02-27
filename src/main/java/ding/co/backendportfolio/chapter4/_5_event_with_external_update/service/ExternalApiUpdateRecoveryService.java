@@ -5,12 +5,12 @@ import ding.co.backendportfolio.chapter4._4_event_with_external.external.Externa
 import ding.co.backendportfolio.chapter4._4_event_with_external.external.model.ExternalEventResponse;
 import ding.co.backendportfolio.chapter4._4_event_with_external.repository.EventWithLockParticipantRepository;
 import ding.co.backendportfolio.chapter4._4_event_with_external.service.EventExternalUpdateService;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
-
 import java.time.LocalDateTime;
 import java.util.List;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
 
 @Service
 @Slf4j
@@ -23,9 +23,17 @@ public class ExternalApiUpdateRecoveryService {
     /**
      * 5분마다 실행되어 외부 ID가 없는 참가자들을 동기화
      */
-//    @Scheduled(fixedDelay = 300000) // 5분
+    // 이렇게 뒤에서 후보정해도 괜찮나?
+    // 현업에서는 "실시간성"보다 "일관성"이 훨씬 중요함.
+    @Scheduled(fixedDelay = 300000) // 5분
     public void recoverMissingExternalIds() {
         // 1. external_id가 없는 참가자들 조회
+        // external_id 가 없다면, db에 외부 api의 응답값이 반영(동기화) 되지 않았다를 의미
+        // => 이것은 암시적인 부분. 이 코드를 처음보는 사람은 명시적으로 위 내용을 알 수가 없음
+        // => external_id 가 null인 record들을 왜 조회하는지 모를 가능성이 크다는 말임
+        // 명시적으로 표현하는 방법
+        // => status = [PENDING, EXTERNAL_API_UPDATE_FAILED, COMPLETED, ...]
+        // => 즉, 칼럼(external_id)값 존재 여부가 아닌 status를 이용해서 만약에 업데이트에 성공했으면, COMPLETED 라는 식으로 올바른 동기화 문제를 해결할 수도 있음
         List<EventWithLockParticipant> participantsWithoutExternalId = participantRepository.findByExternalIdIsNullAndCreatedAtBefore(
                 LocalDateTime.now()
         );
