@@ -5,10 +5,14 @@ spring:
     password: ${RDS_PASSWORD:portfolio1234}
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
-      maximum-pool-size: 32
-  # // TODO: Named Lock 을 위해 아래 주석을 해제해야함
-  #    hikari:
-  #      maximum-pool-size: 64
+      maximum-pool-size: 64
+    # db connection pool = thread pool * 2
+    # transaction -> transaction(Propagation.REQUIRES_NEW) : 2개의 db connection 필요
+    # thread -> 2개의 db connection pool 사용
+
+    # 1-A transaction: named lock을 위한 transaction => named lock 풀
+    # (더 중요) 1-B transaction: db update를 위한 transaction => 일반 트랜잭션 풀
+
   jpa:
     defer-datasource-initialization: true
     hibernate:
@@ -26,6 +30,15 @@ spring:
       host: localhost
       port: 6379
 
+#named-lock:
+#  datasource:
+#    jdbc-url: jdbc:mysql://${RDS_ENDPOINT:localhost}:3307/portfolio?useSSL=false&serverTimezone=Asia/Seoul&allowPublicKeyRetrieval=true&useSSL=false&rewriteBatchedStatements=true
+#    username: portfolio_user
+#    password: ${RDS_PASSWORD:portfolio1234}
+#    driver-class-name: com.mysql.cj.jdbc.Driver
+#    hikari:
+#      pool-name: NamedLockPool
+#      maximum-pool-size: 32
 
 logging:
   level:

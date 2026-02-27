@@ -25,6 +25,9 @@ public interface EventWithLockRepository extends JpaRepository<EventWithLock, Lo
     @Query("select e from EventWithLock e where e.id = :id")
     Optional<EventWithLock> findByIdWithOptimisticLock(Long id);
 
+
+    // 네임드 락
+    // 반환값이 1이면 수행 성공, 0이면 실패 라는 의미임
     @Query(value = "SELECT GET_LOCK(:lockName, :timeoutSeconds)", nativeQuery = true)
     Integer getLock(@Param("lockName") String lockName, @Param("timeoutSeconds") int timeoutSeconds);
 

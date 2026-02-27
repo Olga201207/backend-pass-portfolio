@@ -10,6 +10,7 @@ import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
@@ -82,13 +83,16 @@ public class EventWithLockService {
     }
 
     // TODO: Named Lock 을 위해 아래 주석을 해제해야함
-    //    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    // 1-B Transaction (가칭)
+    // propagation.requires_new 의 경우에는 호출한 트랜잭션과는 별개(commit을 별도로 수행하는)의 새 트랜잭션이므로
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void joinEventWithNamedLock(Long eventId, Long memberId) {
         EventWithLock event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new EntityNotFoundException("이벤트를 찾을 수 없습니다."));
         Member member = memberRepository.findById(memberId)
                 .orElseThrow(() -> new EntityNotFoundException("회원을 찾을 수 없습니다."));
 
+        // event 속성 중 참여자 수 필드값을 업데이트 먼저 함. (insert 문 먼저 실행도는 jpa 특성으로 인한 에러를 방지하기 위해 saveAndFlush 적용)
         event.increaseParticipants();
         eventRepository.saveAndFlush(event);
 

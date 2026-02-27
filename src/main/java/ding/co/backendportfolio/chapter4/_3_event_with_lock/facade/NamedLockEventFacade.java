@@ -16,6 +16,10 @@ public class NamedLockEventFacade {
 
     private static final long RETRY_DELAY_MS = 50;
 
+    // 1-A transaction (가칭)
+    // 낙관적 락과 비슷한 방식으로 재시도가 들어가야 하는 로직임
+    // 즉, version 등의 인수가 db의 record의 것과 다른 경우 재시도하는 로직이 필요하다는 의미
+    // 네임드 락 자체도, 어떤 transaction이 락을 선점하면, 다른 transaction은 그 락을 잡기 위해서 대기해야 한다는 의미
     @Transactional
     public void joinEvent(Long eventId, Long memberId) throws InterruptedException {
         int retryCount = 0;
@@ -24,8 +28,10 @@ public class NamedLockEventFacade {
         while (true) {
             try {
                 int lockResult = eventWithLockRepository.getLock(lockName, 3);
+                // 락 획득 실패시
                 if (lockResult <= 0) {
                     log.warn("락 획득 실패 - eventId: {}, memberId: {}", eventId, memberId);
+                    // 50ms 동안 해당 thread를 잠재움, 이후 재시도
                     Thread.sleep(RETRY_DELAY_MS);
                     continue;
                 }
@@ -35,6 +41,7 @@ public class NamedLockEventFacade {
                         eventId, memberId, retryCount + 1);
                 return;
             } catch (Exception e) {
+                // 수행 중 에러 발생시, 재시도 횟수 증가시키고, 해당 스레드를 잠재운 뒤 재실행
                 retryCount++;
                 log.warn("이벤트 참가 재시도 - eventId: {}, memberId: {}, 현재 시도횟수: {}, error: {}",
                         eventId, memberId, retryCount, e.getMessage());
@@ -47,4 +54,12 @@ public class NamedLockEventFacade {
             }
         }
     }
+
+//    // @Transactional 없음
+//    public void joinEvent(Long eventId, Long memberId) {
+//        String lockName = "event_" + eventId;
+//        namedLockRepository.executeWithLock(lockName, () ->
+//                eventWithLockService.joinEventWithNamedLock(eventId, memberId)
+//        );
+//    }
 }
