@@ -33,5 +33,10 @@ public class HotelBatchSizeService {
         // 두 번째에서는 호텔의 room 을 가져오는 쿼리가 발생하지 않음
         int secondSize = hotels.get(1).getRoomBatchSizes().size();
         System.out.println(">>> 두 번째 로딩: " + secondSize);
+
+        // 페이스북 또는 유튜브에서 게시글 본다음에, 댓글 더보기 버튼 누른 경험이 있을 거임
+        //   -> 처음에는 게시글에는 댓글이 10개만 로드되도록 설정이 되어있었을 거임: batchSize(10)
+        // 유저들이 댓글을 더 보고 싶다면 더보기 버튼을 눌러라. 그때 로드해주겠다.
+        //   -> 더보기 버튼을 누르는 확률이 98%라고 한다면 batchSize(20) 로 설정하는게 효율적일 거임
     }
 }

@@ -5,7 +5,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
-import org.springframework.context.event.EventListener;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
 
 @Component
 @RequiredArgsConstructor
@@ -13,8 +14,9 @@ import org.springframework.context.event.EventListener;
 public class EventJoinEventListener {
     private final KakaoTalkMessageApi kakaoTalkMessageApi;
 
+    // @EventListener
     @Async
-    @EventListener
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void handleEventJoinCompleted(EventJoinCompletedEvent event) {
         try {
             kakaoTalkMessageApi.sendEventJoinMessage(

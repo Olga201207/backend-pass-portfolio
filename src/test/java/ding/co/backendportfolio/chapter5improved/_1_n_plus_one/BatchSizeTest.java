@@ -34,6 +34,17 @@ public class BatchSizeTest {
     void testGetHotels() {
         // given
         TestLogUtil.setUpStart();
+
+        // A, B, C, D, E 호텔의 방을 조회해줘
+        // Lazy loading -> A의 방을 조회하고 올게 B의 방을 조회하고 올게 C의 방을 조회하고 올게....
+        // D의 방을 조회하고 올게, E의 방을 조회하고 올게 -> 5번의 쿼리가 나가는 수행방식
+        // batch size (같은 쿼리( 개수)를 batch size 개수만큼 묶어서 나가도록)
+        // 예시
+        // batch size(2) A,B의 방을 조회하고 올게 -> C,D의 방을 조회하고 올게
+        // E의 방을 조회하고 올게 -> 즉 총 3번의 쿼리만 나가도록 설정
+        // batch size의 단점.
+        // batch size로 지정한 만큼 필요 없어도, 그만큼씩 항상 로딩한다.
+
         createHotelBatchSize("A", 5);
         createHotelBatchSize("B", 5);
         createHotelBatchSize("C", 5);

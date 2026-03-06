@@ -27,4 +27,8 @@ public class HotelEagerService {
                 .filter(hotelEager -> !hotelEager.getRoomEagers().isEmpty())
                 .toList();
     }
+
+    // JPA sql
+    // 1. EntityManager.find() / CrudRepository.findById()
+    // 2. findAll JPQL을 hibernate SQL로 변환해서 실행하는 방식
 }
