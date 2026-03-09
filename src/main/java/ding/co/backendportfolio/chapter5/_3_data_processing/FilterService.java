@@ -20,9 +20,9 @@ public class FilterService {
      */
     public void badFilter(List<Post> posts) {
         posts.stream()
-                .filter(post -> sentimentAnalysisApiClient.isPositiveSentiment(post))
-                .filter(post -> sensitiveWordCheckApiClient.containsNegativeWords(post))
-                .filter(post -> post.isVideoType())
+                .filter(post -> sentimentAnalysisApiClient.isPositiveSentiment(post))       // 긍정적 감정 분석 api 호출
+                .filter(post -> sensitiveWordCheckApiClient.containsNegativeWords(post))    // 부정적 단어 포함 체크 api 호출
+                .filter(post -> post.isVideoType())                                         // 포스트 타입 체크 기능
                 .collect(Collectors.toList());
     }
 }

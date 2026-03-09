@@ -51,10 +51,15 @@ public class BulkOperationImprovedService {
                 });
     }
 
+    // entityManager: 관리자
+    // entityManager는 개발자가 직접 query를 실행하도록 하는것이 싫음, 왜냐하면 해당 entity들에 대한 정보를 알 수 없게 되기 때문임(해당 엔티티들에 대해서 추적이 불가능해진다는 말)
+    // entityManager.flush(): 그래서, 지금까지 있었던 변경사항까지는 전부 반영하라고 요청을 하고,
+    // entityManager.clear(): 그 영속성 컨텍스트를 초기화하는 작업을 가져줘야 함
+    // 엔티티 생명주기(@preRemove, @postRemove 등) 혹은 연관관계(casecade; 부모레코드 삭제 전에 자식레코드 삭제해야함)에 대한 로직이 있다면, deleteAllInBatch는 적합하지 않다
     @Transactional
     public void bulkDeleteImproved() {
         entityManager.flush(); // 영속성 컨텍스트의 변경 내용을 데이터베이스에 반영
-        repository.deleteAllInBatch(); // Batch Delete 쿼리 실행
+        repository.deleteAllInBatch(); // Batch Delete 쿼리 실행 (jdbc template이 아닌 jpa에서 제공하는 기능)
         entityManager.clear(); // 영속성 컨텍스트 초기화
     }
 }

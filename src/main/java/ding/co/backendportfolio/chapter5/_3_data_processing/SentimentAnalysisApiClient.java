@@ -5,6 +5,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class SentimentAnalysisApiClient {
 
+    // 긍정적 감정 분석 결과 외부 (더미) api 호출 서비스
     /**
      * - 비용: 10
      * - 선택도: 0.5

@@ -30,16 +30,6 @@ spring:
       host: localhost
       port: 6379
 
-#named-lock:
-#  datasource:
-#    jdbc-url: jdbc:mysql://${RDS_ENDPOINT:localhost}:3307/portfolio?useSSL=false&serverTimezone=Asia/Seoul&allowPublicKeyRetrieval=true&useSSL=false&rewriteBatchedStatements=true
-#    username: portfolio_user
-#    password: ${RDS_PASSWORD:portfolio1234}
-#    driver-class-name: com.mysql.cj.jdbc.Driver
-#    hikari:
-#      pool-name: NamedLockPool
-#      maximum-pool-size: 32
-
 logging:
   level:
     org.springframework: info

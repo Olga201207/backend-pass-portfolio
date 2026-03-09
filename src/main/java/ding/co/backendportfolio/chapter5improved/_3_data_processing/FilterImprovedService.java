@@ -16,6 +16,7 @@ public class FilterImprovedService {
     private final SentimentAnalysisApiClient sentimentAnalysisApiClient;
     private final SensitiveWordCheckApiClient sensitiveWordCheckApiClient;
 
+    // 필터 overhead를 오름차순으로 정렬(overhead 작은거를 filter pipeline 앞에 설정)
     /**
      * 1. 포스트 타입 체크: 비용 1, 선택도 0.33 => FilterOverhead 0.33
      * 2. 부정적 단어 포함 체크: 비용 10, 선택도 0.33 => FilterOverhead 3.3

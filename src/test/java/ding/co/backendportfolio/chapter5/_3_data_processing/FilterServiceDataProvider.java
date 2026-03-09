@@ -10,6 +10,8 @@ public class FilterServiceDataProvider {
     public static final String ALPHABET = "abcdefghijklmnopqrstuvwxyz";
     public static final int ALPHABET_LENGTH = ALPHABET.length();
 
+    // 100개의 게시글 데이터를 간편하게 만들어주는 테스트 fixture 용 클래스
+    // 100개의 게시글 객체(empty)를 생성해서 리스트에 넣어주고, 안에서 게시글 객체에 필드들 설정. 이후 100개의 post 객체 담은 list 반환
     public static List<Post> createTestData() {
         List<Integer> list = new ArrayList<>();
         for (int i = 1; i <= LIST_SIZE; i++) {

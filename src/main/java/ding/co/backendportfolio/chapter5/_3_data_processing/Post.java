@@ -17,8 +17,8 @@ public class Post {
     }
 
     /**
-     * - 비용: 1
-     * - 선택도: 0.33
+     * - 비용: 1 (ms)
+     * - 선택도: 0.33 => (테스트 시, PostType을 [TEXT, IMAGE, VIDEO] 중 하나로 설정해서 각 ENTITY를 생성할 것이기 때문)
      * => FilterOverhead: 1 * 0.33 = 0.33
      */
     public boolean isVideoType() {
