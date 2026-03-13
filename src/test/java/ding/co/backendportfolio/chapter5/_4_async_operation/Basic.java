@@ -52,9 +52,12 @@ public class Basic {
         log.info("3. 빵 먹기");
     }
 
+    // completableFuture: 단순한 비동기 실행을 넘어서, 손쉽게 이 비동기 작업간의 흐름을 조합하고 결과를 조작할 수 있음
     @Test
     public void completableFutureExample() {
         // 1) supplyAsync: 별도 스레드에서 비동기로 실행 (값 반환)
+        // 비동기적으로 작업 수행 후, 반환 값을 가짐
+        // 즉, future 라는 변수에는 내부 작업 수행 결과를 갖고 있음
         CompletableFuture<String> future = CompletableFuture.supplyAsync(() -> {
             try {
                 // 오래 걸리는 작업 시뮬레이션
@@ -69,6 +72,10 @@ public class Basic {
         CompletableFuture<String> chainedFuture = future
                 .thenApply(bread -> bread + " + 잼")
                 .thenApply(breadWithJam -> breadWithJam + " + 버터");
+
+        // 빵먹기 전에 해야 하는 행동들 추가 구현
+        // 중간에서 cpu 바운딩 된 액션들을 여기에서 동작
+        // 여기에서는 메인 스레드를 안 쉬게 만듦 (논 블로킹)
 
         // 3) join: 최종 결과를 얻을 때까지 기다림 (블로킹)
         String result = chainedFuture.join();

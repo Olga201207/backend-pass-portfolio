@@ -27,9 +27,11 @@ public class MovieImprovedService {
     public MovieDetailResult getMovieDetail(Long userNo, Long movieId) {
         Movie movie = movieRepository.findById(movieId).orElseThrow();
 
+
         CompletableFuture<Integer> ranking = rankingClient.getRanking(movieId);
         CompletableFuture<Boolean> isAvailable = bookingClient.isAvailable(movieId);
         CompletableFuture<List<Long>> recommendedMovieIds = recommendClient.getRecommendedMovieIds(userNo);
+
 
         interestEmitter.emitUserInterest(userNo, movieId);
 
