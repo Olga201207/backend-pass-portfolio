@@ -1,4 +1,7 @@
 spring:
+  cache:
+    # cache type 의 기본 값은 simple
+    type:
   datasource:
     url: jdbc:mysql://${RDS_ENDPOINT:localhost}:3307/portfolio?useSSL=false&serverTimezone=Asia/Seoul&allowPublicKeyRetrieval=true&useSSL=false&rewriteBatchedStatements=true
     username: portfolio_user
