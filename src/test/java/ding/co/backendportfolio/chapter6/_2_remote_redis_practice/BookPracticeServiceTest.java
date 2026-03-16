@@ -1,5 +1,7 @@
 package ding.co.backendportfolio.chapter6._2_remote_redis_practice;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
 import ding.co.backendportfolio.chapter6._1_practice.Book;
 import ding.co.backendportfolio.chapter6._1_practice.BookRepository;
@@ -8,8 +10,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 @Slf4j
 @IntegrationTest
@@ -38,6 +38,14 @@ class BookPracticeServiceTest {
     @Test
     void findBookById() throws JsonProcessingException {
         // 첫 번째에는 캐시가 없어 DB 의 데이터를 가져와서 사용한다.
+        // id=1
+        // 1. cache에 데이터 없을 때
+        //   1. cache.get("remote-cache-practice:1") -> null(nil)   // cache miss
+        //   2. data = repository.findById(1)
+        //   3. redisTemplate.opsForValue().set(cacheKey, objectMapper.writeValueAsString(book));
+        // 2. cache에 데이터 있을 때
+        //   1. serialized = cache.get("remote-cache-practice:1") -> string   // cache miss
+        //   2. data = objectMapper.readValue(serialized, Book.class);
         Book firstBook = bookPracticeService.findBookById(this.book.getId());
 
         log.info("--------------------");

@@ -44,6 +44,13 @@ class CacheAvalancheTest extends AbstractBookTest {
         redisTemplate.delete(keys);
     }
 
+    // =====================
+    // [DB Call Stats]
+    // NAME               모두 같은 TTL   // 테스트 케이스 이름,
+    // Key Size:             282   // db 조회 시간 갯수(0.1초 단위)
+    // Total DB Calls:     31145   // 전체 구간 동안의 총 DB 호출 횟수
+    // CV:                  0.81   // 변동계수(CV) - 평균 대비 상대적 분산 정도. 값이 클수록 요청량의 시간적 쏠림이 큼
+    // =====================
     @Test
     @DisplayName("No Jitter")
     void noJitter() throws Exception {
@@ -71,6 +78,13 @@ class CacheAvalancheTest extends AbstractBookTest {
         Thread.sleep(3000);
     }
 
+    //  =====================
+    //  [DB Call Stats]
+    //  NAME               JITTER 적용   // 테스트 케이스 이름,
+    //  Key Size:             299   // db 조회 시간 갯수(0.1초 단위)
+    //  Total DB Calls:     24263   // 전체 구간 동안의 총 DB 호출 횟수
+    //  CV(avalanche 문제 방지에 대한 중요 수치; 작을 수록 좋음):                  0.36   // 변동계수(CV) - 평균 대비 상대적 분산 정도. 값이 클수록 요청량의 시간적 쏠림이 큼
+    //  =====================
     @Test
     @DisplayName("Jitter 적용")
     void withJitter() throws Exception {

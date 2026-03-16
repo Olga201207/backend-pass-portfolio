@@ -30,7 +30,7 @@ class CachePenetrationTest extends AbstractBookTest {
     void findBookByIdWithCachePenetration(RepetitionInfo repetitionInfo) {
         measureAndRecordTime("Cache Penetration 발생", repetitionInfo.getCurrentRepetition(), () -> {
             try {
-                bookRedisService.findBookById(-1L);
+                bookRedisService.findBookById(-1L); // cache miss를 의도적으로 유발
             } catch (JsonProcessingException e) {
                 throw new RuntimeException(e);
             }
