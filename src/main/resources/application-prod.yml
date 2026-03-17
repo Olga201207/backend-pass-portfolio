@@ -1,0 +1,14 @@
+spring:
+  data:
+    redis:
+      host: redis
+      port: 6379
+
+  jpa:
+    properties:
+      hibernate:
+        show_sql: false
+
+  datasource:
+    url: jdbc:mysql://${RDS_ENDPOINT}/portfolio?useSSL=false&serverTimezone=Asia/Seoul&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
+    password: ${RDS_PASSWORD}
