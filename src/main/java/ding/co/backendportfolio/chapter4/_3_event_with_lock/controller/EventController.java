@@ -1,6 +1,7 @@
 package ding.co.backendportfolio.chapter4._3_event_with_lock.controller;
 
 import ding.co.backendportfolio.chapter2.service.MemberService;
+import ding.co.backendportfolio.chapter4._3_event_with_lock.facade.NamedLockEventFacade;
 import ding.co.backendportfolio.chapter4._3_event_with_lock.service.EventWithLockService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -16,6 +17,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class EventController {
     private final EventWithLockService eventWithLockService;
+    private final NamedLockEventFacade namedLockEventFacade;
     private final MemberService memberService;
 
     @PostMapping("/{eventId}/join/optimistic")
@@ -33,6 +35,15 @@ public class EventController {
             @AuthenticationPrincipal User user) {
         Long memberId = memberService.getCurrentMember(user.getUsername()).getId();
         eventWithLockService.joinEventPessimistic(eventId, memberId);
+        return ResponseEntity.ok().build();
+    }
+
+    @PostMapping("/{eventId}/join/named")
+    public ResponseEntity<Void> joinEventNamed(
+            @PathVariable Long eventId,
+            @AuthenticationPrincipal User user) throws InterruptedException {
+        Long memberId = memberService.getCurrentMember(user.getUsername()).getId();
+        namedLockEventFacade.joinEvent(eventId, memberId);
         return ResponseEntity.ok().build();
     }
 } 

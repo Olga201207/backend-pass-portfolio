@@ -1,11 +1,11 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Rate } from 'k6/metrics';
+import { BASE_URL } from '../../config.js';
 
 const errorRate = new Rate('errors');
-const BASE_URL = 'http://localhost:8080/api';
 
-// 테스트 설정
+// 테스트 설정 (인덱스 적용 전)
 export const options = {
   stages: [
     { duration: '1m', target: 50 },    // 1분동안 0->50 사용자
@@ -29,7 +29,7 @@ export default function () {
 
   // 1. 주문 목록 조회 (N+1 문제 발생 가능)
   const ordersResponse = http.get(
-    `${BASE_URL}/orders?startDate=2024-01-01&endDate=2024-12-31&status=COMPLETED`,
+    `${BASE_URL}/chapter3/orders?startDate=2024-01-01&endDate=2024-12-31&status=COMPLETED`,
     params
   );
   check(ordersResponse, {
@@ -40,7 +40,7 @@ export default function () {
 
   // 2. 주문번호로 검색 (인덱스 성능 테스트)
   const searchResponse = http.get(
-    `${BASE_URL}/orders/search?orderNumber=ORD-2024`,
+    `${BASE_URL}/chapter3/orders/search?orderNumber=ORD-2024`,
     params
   );
   check(searchResponse, {
@@ -51,7 +51,7 @@ export default function () {
 
   // 3. 회원별 주문 통계 (집계 쿼리 성능)
   const statsResponse = http.get(
-    `${BASE_URL}/orders/stats?minAmount=500000`,
+    `${BASE_URL}/chapter3/orders/stats?minAmount=500000`,
     params
   );
   check(statsResponse, {
@@ -62,7 +62,7 @@ export default function () {
 
   // 4. 복합 조건 검색 (인덱스 최적화 테스트)
   const complexSearchResponse = http.get(
-    `${BASE_URL}/orders/complex-search?startDate=2024-01-01&status=COMPLETED&minAmount=100000`,
+    `${BASE_URL}/chapter3/orders/complex-search?startDate=2024-01-01&status=COMPLETED&minAmount=100000`,
     params
   );
   check(complexSearchResponse, {
@@ -74,7 +74,8 @@ export default function () {
 
 // 결과 처리
 export function handleSummary(data) {
+  const timestamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
   return {
-    'order-test-summary.json': JSON.stringify(data),
+    [`results/order-before-${timestamp}.json`]: JSON.stringify(data),
   };
-} 
+}

@@ -92,7 +92,7 @@ List<HotelEntityGraph> findAll();
 | 툴 | 사용 방법 | 측정 지표 |
 |----|----------|----------|
 | **Grafana** (커스텀 패널) | PromQL: `app_query_per_request_sum / app_query_per_request_count` (path 태그 필터) | 요청당 평균/p95 쿼리 수 |
-| **Grafana** (Dashboard #6756) | Spring Boot Statistics → HTTP Request Duration (path 필터) | p95 응답시간 |
+| **Grafana** (Dashboard #19004) | Spring Boot Observability → HTTP Request Duration (path 필터) | p95 응답시간 |
 | **Grafana** (Dashboard #14091) | HikariCP → Active Connections | DB 커넥션 사용량 |
 | **k6** | `load-test.js` 변형 — hotel 엔드포인트로 교체, 30 VU / 3분 | throughput, p95 latency |
 | **CloudWatch** | AWS/RDS → `DatabaseConnections`, `CPUUtilization` | DB 부하 |
@@ -178,7 +178,7 @@ public void bulkDeleteImproved() {
 
 | 툴 | 사용 방법 | 측정 지표 |
 |----|----------|----------|
-| **Grafana** (Dashboard #6756) | HTTP Request Duration (batch 엔드포인트 필터) | 단건 배치 실행 시간 |
+| **Grafana** (Dashboard #19004) | HTTP Request Duration (batch 엔드포인트 필터) | 단건 배치 실행 시간 |
 | **Grafana** (Dashboard #4701) | JVM (Micrometer) → Heap Memory / GC Pause Time | 메모리 사용, GC 영향 |
 | **k6** | 1 VU 단발 실행 (`k6 run --vus 1 --iterations 1`) → `http_req_duration` | 단건 실행 시간 측정 |
 | **CloudWatch** | AWS/RDS → `CPUUtilization`, `DatabaseConnections` 시계열 | INSERT 구간 DB 부하 스파이크 |
@@ -336,8 +336,8 @@ public Page<OrderStatisticsResponse> getOrderStatistics(Long minAmount, Pageable
 |----|----------|----------|
 | **k6** | `order-load-test.js` — `/api/orders/stats?minAmount=500000` 엔드포인트, p95<300ms threshold | p95 latency, throughput, error rate |
 | **k6** | Stage 1(50VU 2분) → Stage 2(100VU 3분) → Stage 3(down) 부하 패턴 | 고트래픽 시 응답 안정성 |
-| **Grafana** (Dashboard #6756) | HTTP Request Duration (path: `/api/orders/stats` 필터) | Before/After p95 응답시간 |
-| **Grafana** (Dashboard #6756) | HTTP Request Rate (RPS) | 처리량 비교 |
+| **Grafana** (Dashboard #19004) | HTTP Request Duration (path: `/api/orders/stats` 필터) | Before/After p95 응답시간 |
+| **Grafana** (Dashboard #19004) | HTTP Request Rate (RPS) | 처리량 비교 |
 | **CloudWatch** | AWS/RDS → `CPUUtilization` (Before: 매 요청 집계 시 CPU 스파이크 vs After: 평탄) | DB CPU 부하 패턴 |
 | **CloudWatch** | AWS/RDS → `DatabaseConnections` | 커넥션 사용 패턴 |
 
@@ -419,7 +419,7 @@ CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
 | **k6** | 커스텀 스크립트 — `/api/movies/{id}` 엔드포인트, 20 VU / 2분 | p50/p95 응답시간 |
 | **k6** | `http_req_duration` 히스토그램으로 Before(직렬) / After(비동기) 분포 비교 | 응답시간 분포 |
 | **Grafana** (Dashboard #4701) | JVM Threads → tomcat-exec pool + async-task pool thread 수 | 스레드 사용량 |
-| **Grafana** (Dashboard #6756) | HTTP Request Duration 시계열 | 응답시간 Before/After |
+| **Grafana** (Dashboard #19004) | HTTP Request Duration 시계열 | 응답시간 Before/After |
 | **CloudWatch** | AWS/EC2 → `CPUUtilization` (비동기 처리로 인한 CPU 활용률 변화) | CPU 사용 패턴 |
 
 `AsyncConfig`의 `corePoolSize`/`maxPoolSize` 설정값이 Grafana JVM Threads 패널에 실시간 반영됨
@@ -613,21 +613,73 @@ DB 호출 2건: 락 경합 과정에서 극히 드물게 발생한 2건으로, �
 | Dashboard ID | 이름 | 주요 패널 |
 |-------------|------|----------|
 | **4701** | JVM (Micrometer) | Heap/Non-heap memory, GC pause, JVM threads |
-| **6756** | Spring Boot Statistics | HTTP req rate, p50/p95/p99 latency, error rate, DB pool |
+| **19004** | Spring Boot Observability | HTTP req rate, p50/p95/p99 latency, error rate, DB pool |
 | **14091** | HikariCP | active/idle/pending connections, acquisition time |
-| **763** | Redis Dashboard | memory usage, ops/sec, hit rate, connected clients |
+| **763** | Redis Dashboard (시나리오 6A/B/C 전용) | memory usage, ops/sec, hit rate, connected clients |
 | **커스텀** | Query Count | `app.query.per_request` p95 (path별) |
 
 ### k6 스크립트 매핑
 
-| 파일 | 대상 시나리오 | VU / Duration | 핵심 threshold |
-|------|-------------|---------------|----------------|
-| `load-test.js` | 시나리오 1, 2 (N+1, Bulk) | 100→300 VU / 23분 | p95 < 2000ms |
-| `chapter4-load-test.js` | 시나리오 3 (동시성) | 50→100 VU / 8분 | errors < 0.1 |
-| `order-load-test.js` | 시나리오 4 (통계 쿼리) | 50→100 VU / 8분 | p95 < 300ms |
-| `k6-test.js` | 시나리오 5 (비동기) | 10 VU / 10분 | p95 < 500ms |
-| `cpu-test.js` | CPU 부하 측정 | 0→50→0 VU / 30분 | — |
-| `memory-test.js` | Memory 부하 측정 | 0→10→0 VU / 2분 | — |
+| 시나리오 | k6 스크립트 | Before 엔드포인트 | After 엔드포인트 | VU / Duration | 핵심 threshold |
+|---------|-----------|----------------|----------------|---------------|----------------|
+| 1 N+1 | `chapter5/n-plus-one-test.js` | `GET /api/chapter5/hotels/lazy` | `GET /api/chapter5/hotels/fetch-join` | 30 VU / 3분 | p95 < 2000ms |
+| 2 Bulk | `chapter5/bulk-insert-test.js` | `POST /api/chapter5/bulk/individual` | `POST /api/chapter5/bulk/batch` | 1 VU / 1 iter | http_req_duration 비교 |
+| 3 동시성 | `chapter4/concurrency-test.js` | (락 없음) | `POST /api/chapter4/events/{id}/join/pessimistic` | 100 VU / 50초 | errors < 0.05 |
+| 4 통계 | `chapter3/before/order-test.js`, `chapter3/after/order-test.js` | `GET /api/chapter3/orders/stats` | `GET /api/chapter3improved/orders/stats` | 50→100 VU / 8분 | p95 < 300ms |
+| 5 비동기 | `chapter5/async-test.js` | `GET /api/chapter5/movies/{id}` | `GET /api/chapter5improved/movies/{id}` | 20 VU / 3분 | p95 < 1500ms |
+| 6C Hot Key | `chapter6/hot-key-test.js` | `GET /api/chapter6/books/{id}` | `GET /api/chapter6improved/books/{id}` | 300 VU / 30초 | errors < 0.05 |
+| 6B Avalanche | `chapter6/cache-avalanche-test.js` | `GET /api/chapter6/books/{id}/avalanche` | `GET /api/chapter6improved/books/{id}/avalanche` | 300 VU / 40초 | errors < 0.05 |
+| 6A Penetration | `chapter6/cache-penetration-test.js` | `GET /api/chapter6/books/{id}` (없는 ID) | `GET /api/chapter6improved/books/{id}` (없는 ID) | 100 VU / 1분 20초 | errors < 0.05 |
+
+#### Before/After 전환 방법 (STRATEGY 환경변수)
+
+```bash
+# 시나리오 1: N+1
+cd k6-scripts/chapter5
+STRATEGY=lazy       ./run.sh n-plus-one   # Before
+STRATEGY=fetch-join ./run.sh n-plus-one   # After (Fetch Join)
+STRATEGY=batch-size ./run.sh n-plus-one   # After (BatchSize)
+
+# 시나리오 2: Bulk Insert
+STRATEGY=individual ./run.sh bulk-insert  # Before
+STRATEGY=batch      ./run.sh bulk-insert  # After
+
+# 시나리오 3: 동시성
+cd k6-scripts/chapter4
+STRATEGY=pessimistic ./run.sh             # After (Pessimistic Lock)
+STRATEGY=optimistic  ./run.sh             # After (Optimistic Lock)
+STRATEGY=named       ./run.sh             # After (Named Lock)
+
+# 시나리오 5: 비동기
+cd k6-scripts/chapter5
+STRATEGY=sync  ./run.sh async             # Before
+STRATEGY=async ./run.sh async             # After
+
+# 시나리오 6C: Hot Key
+cd k6-scripts/chapter6
+STRATEGY=before ./run.sh hot-key          # Before (락 없음)
+STRATEGY=after  ./run.sh hot-key          # After (분산 락)
+
+# 시나리오 6B: Cache Avalanche
+STRATEGY=before ./run.sh cache-avalanche  # Before (고정 TTL)
+STRATEGY=after  ./run.sh cache-avalanche  # After (Jitter)
+
+# EC2 환경 오버라이드
+BASE_URL=http://<EC2_IP>:8080/api STRATEGY=after ./run.sh hot-key
+```
+
+#### 데이터 시딩 (최초 1회)
+
+```bash
+# HTTP API로 시딩 (앱 기동 후)
+curl -X POST "http://localhost:8080/api/chapter5/hotels/setup?hotelCount=100"
+curl -X POST "http://localhost:8080/api/chapter5/movies/setup?count=100"
+curl -X POST "http://localhost:8080/api/chapter6/books/setup?count=1000"
+
+# 또는 SQL 직접 실행
+mysql -u portfolio_user -p portfolio < src/main/resources/chapter5/mock-data.sql
+mysql -u portfolio_user -p portfolio < src/main/resources/chapter6/mock-data.sql
+```
 
 ### 로컬 환경 재현 절차
 
@@ -636,13 +688,28 @@ DB 호출 2건: 락 경합 과정에서 극히 드물게 발생한 2건으로, �
 docker-compose up -d
 
 # 2. Grafana 접속 (http://localhost:3001) → Dashboards → Import
-#    Dashboard ID 입력: 4701, 6756, 14091, 763
+#    Dashboard ID 입력: 4701, 19004, 14091, 763
 #    Data Source: Prometheus (http://prometheus:9090)
 
-# 3. 애플리케이션 구동 후 k6 부하 테스트 실행 예시
-k6 run k6-scripts/order-load-test.js          # 시나리오 4
-k6 run k6-scripts/chapter4-load-test.js       # 시나리오 3
-k6 run --vus 1 --iterations 1 k6-scripts/load-test.js  # 시나리오 2 단발
+# 3. 데이터 시딩 (최초 1회)
+curl -X POST "http://localhost:8080/api/chapter5/hotels/setup?hotelCount=100"
+curl -X POST "http://localhost:8080/api/chapter5/movies/setup?count=100"
+curl -X POST "http://localhost:8080/api/chapter6/books/setup?count=1000"
+
+# 4. k6 부하 테스트 실행 예시
+cd k6-scripts/chapter3 && ./run.sh before                # 시나리오 4 Before
+cd k6-scripts/chapter3 && ./run.sh after                 # 시나리오 4 After
+cd k6-scripts/chapter4 && STRATEGY=pessimistic ./run.sh  # 시나리오 3
+cd k6-scripts/chapter5 && STRATEGY=lazy ./run.sh n-plus-one     # 시나리오 1 Before
+cd k6-scripts/chapter5 && STRATEGY=fetch-join ./run.sh n-plus-one # 시나리오 1 After
+cd k6-scripts/chapter5 && STRATEGY=individual ./run.sh bulk-insert # 시나리오 2 Before
+cd k6-scripts/chapter5 && STRATEGY=batch ./run.sh bulk-insert      # 시나리오 2 After
+cd k6-scripts/chapter5 && STRATEGY=sync ./run.sh async   # 시나리오 5 Before
+cd k6-scripts/chapter5 && STRATEGY=async ./run.sh async  # 시나리오 5 After
+cd k6-scripts/chapter6 && STRATEGY=before ./run.sh hot-key          # 시나리오 6C Before
+cd k6-scripts/chapter6 && STRATEGY=after ./run.sh hot-key           # 시나리오 6C After
+cd k6-scripts/chapter6 && STRATEGY=before ./run.sh cache-avalanche  # 시나리오 6B Before
+cd k6-scripts/chapter6 && STRATEGY=after ./run.sh cache-avalanche   # 시나리오 6B After
 ```
 
 ### 운영 환경 (AWS CloudWatch)

@@ -1,7 +1,7 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
-import { SharedArray } from 'k6/data';
 import { Rate } from 'k6/metrics';
+import { BASE_URL, HOST_URL } from '../config.js';
 
 // 에러율 메트릭 정의
 const errorRate = new Rate('errors');
@@ -29,8 +29,6 @@ function getRandomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-const BASE_URL = 'http://localhost:8080/api';
-
 // 기본 헤더
 const headers = {
   'Content-Type': 'application/json',
@@ -39,7 +37,7 @@ const headers = {
 // 테스트 시나리오
 export default function () {
   // 1. 로그인 (토큰 획득)
-  const loginRes = http.post(`${BASE_URL}/auth/login`, JSON.stringify({
+  const loginRes = http.post(`${BASE_URL}/chapter2/members/login`, JSON.stringify({
     email: `user${getRandomInt(1, 1000000)}@test.com`,
     password: 'password123',
   }), { headers });
@@ -55,7 +53,7 @@ export default function () {
   };
 
   // 2. 게시글 목록 조회 (페이징, 정렬)
-  const listRes = http.get(`${BASE_URL}/boards?page=${getRandomInt(0, 1000)}&size=20&sort=createdAt,desc`, {
+  const listRes = http.get(`${BASE_URL}/chapter2/boards?page=${getRandomInt(0, 1000)}&size=20&sort=createdAt,desc`, {
     headers: authHeaders,
     tags: { type: 'list' },
   });
@@ -65,7 +63,7 @@ export default function () {
   }) || errorRate.add(1);
 
   // 3. 게시글 검색
-  const searchRes = http.get(`${BASE_URL}/boards/search?keyword=Title${getRandomInt(1, 500000)}`, {
+  const searchRes = http.get(`${BASE_URL}/chapter2/boards/search?keyword=Title${getRandomInt(1, 500000)}`, {
     headers: authHeaders,
     tags: { type: 'search' },
   });
@@ -75,7 +73,7 @@ export default function () {
   }) || errorRate.add(1);
 
   // 4. 게시글 상세 조회
-  const detailRes = http.get(`${BASE_URL}/boards/${getRandomInt(1, 500000)}`, {
+  const detailRes = http.get(`${BASE_URL}/chapter2/boards/${getRandomInt(1, 500000)}`, {
     headers: authHeaders,
     tags: { type: 'detail' },
   });
@@ -85,7 +83,7 @@ export default function () {
   }) || errorRate.add(1);
 
   // 5. 태그별 게시글 조회
-  const tagRes = http.get(`${BASE_URL}/boards/tags/tag${getRandomInt(1, 1000)}`, {
+  const tagRes = http.get(`${BASE_URL}/chapter2/boards/tags/tag${getRandomInt(1, 1000)}`, {
     headers: authHeaders,
     tags: { type: 'tag' },
   });
@@ -95,7 +93,7 @@ export default function () {
   }) || errorRate.add(1);
 
   // 6. 게시글 작성
-  const createRes = http.post(`${BASE_URL}/boards`, JSON.stringify({
+  const createRes = http.post(`${BASE_URL}/chapter2/boards`, JSON.stringify({
     title: `Load Test Title ${Date.now()}`,
     content: 'Load test content with some random text...',
     category: ['NOTICE', 'FREE', 'QUESTION', 'TECH'][getRandomInt(0, 3)],
@@ -106,12 +104,12 @@ export default function () {
   }), { headers: authHeaders, tags: { type: 'create' } });
 
   check(createRes, {
-    'create successful': (r) => r.status === 201,
+    'create successful': (r) => r.status === 200,
   }) || errorRate.add(1);
 
   // 7. 좋아요 토글
   const likeRes = http.post(
-    `${BASE_URL}/boards/${getRandomInt(1, 500000)}/likes`,
+    `${BASE_URL}/chapter2/boards/${getRandomInt(1, 500000)}/like`,
     null,
     { headers: authHeaders, tags: { type: 'like' } }
   );
@@ -121,7 +119,7 @@ export default function () {
   }) || errorRate.add(1);
 
   // 8. 카테고리별 게시글 통계
-  const statsRes = http.get(`${BASE_URL}/boards/stats`, {
+  const statsRes = http.get(`${BASE_URL}/chapter2/boards/analytics`, {
     headers: authHeaders,
     tags: { type: 'stats' },
   });
@@ -135,7 +133,7 @@ export default function () {
 
 // 초기 체크 (테스트 시작 전 서버 상태 확인)
 export function setup() {
-  const res = http.get(`${BASE_URL}/health`);
+  const res = http.get(`${HOST_URL}/actuator/health`);
   check(res, {
     'health check passed': (r) => r.status === 200,
   });
@@ -143,7 +141,8 @@ export function setup() {
 
 // 결과 처리
 export function handleSummary(data) {
+  const timestamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
   return {
-    'summary.json': JSON.stringify(data),
+    [`results/board-load-test-${timestamp}.json`]: JSON.stringify(data),
   };
-} 
+}

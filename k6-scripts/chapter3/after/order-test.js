@@ -1,10 +1,11 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Rate } from 'k6/metrics';
+import { BASE_URL } from '../../config.js';
 
 const errorRate = new Rate('errors');
-const BASE_URL = 'http://app:8080/api';
 
+// 테스트 설정 (인덱스 적용 후)
 export const options = {
   stages: [
     { duration: '1m', target: 50 },    // 1분동안 0->50 사용자
@@ -35,7 +36,7 @@ export default function () {
   // 1. 주문 목록 조회 (페이징)
   const pageNum = Math.floor(Math.random() * 50); // 0-49 페이지
   const ordersResponse = http.get(
-    `${BASE_URL}/orders?page=${pageNum}&size=${ORDERS_PER_PAGE}`,
+    `${BASE_URL}/chapter3/orders?page=${pageNum}&size=${ORDERS_PER_PAGE}`,
     params
   );
   check(ordersResponse, {
@@ -47,7 +48,7 @@ export default function () {
   // 2. 주문 상세 조회
   const orderId = 1 + Math.floor(Math.random() * 1000000); // 1-1000000
   const orderDetailResponse = http.get(
-    `${BASE_URL}/orders/${orderId}`,
+    `${BASE_URL}/chapter3/orders/${orderId}`,
     params
   );
   check(orderDetailResponse, {
@@ -60,9 +61,9 @@ export default function () {
   const categories = ['ELECTRONICS', 'CLOTHING', 'BOOKS', 'FOOD', 'OTHERS'];
   const randomCategory = categories[Math.floor(Math.random() * categories.length)];
   params.tags.type = 'product-search';
-  
+
   const productsResponse = http.get(
-    `${BASE_URL}/products?category=${randomCategory}&page=${Math.floor(Math.random() * 50)}&size=${PRODUCTS_PER_PAGE}`,
+    `${BASE_URL}/chapter3/products?category=${randomCategory}&page=${Math.floor(Math.random() * 50)}&size=${PRODUCTS_PER_PAGE}`,
     params
   );
   check(productsResponse, {
@@ -75,9 +76,9 @@ export default function () {
   const statuses = ['COMPLETED', 'PROCESSING', 'CANCELLED', 'PENDING'];
   const randomStatus = statuses[Math.floor(Math.random() * statuses.length)];
   params.tags.type = 'order-search';
-  
+
   const ordersByStatusResponse = http.get(
-    `${BASE_URL}/orders/status/${randomStatus}?page=${Math.floor(Math.random() * 50)}&size=${ORDERS_PER_PAGE}`,
+    `${BASE_URL}/chapter3/orders/status/${randomStatus}?page=${Math.floor(Math.random() * 50)}&size=${ORDERS_PER_PAGE}`,
     params
   );
   check(ordersByStatusResponse, {
@@ -90,7 +91,7 @@ export default function () {
   const startDate = '2023-01-01';
   const endDate = '2024-12-31';
   const ordersByDateResponse = http.get(
-    `${BASE_URL}/orders/period?startDate=${startDate}&endDate=${endDate}&page=${Math.floor(Math.random() * 50)}&size=${ORDERS_PER_PAGE}`,
+    `${BASE_URL}/chapter3/orders/period?startDate=${startDate}&endDate=${endDate}&page=${Math.floor(Math.random() * 50)}&size=${ORDERS_PER_PAGE}`,
     params
   );
   check(ordersByDateResponse, {
@@ -98,4 +99,12 @@ export default function () {
     'orders by date response time < 400ms': (r) => r.timings.duration < 400,
   }) || errorRate.add(1);
   sleep(1);
-} 
+}
+
+// 결과 처리
+export function handleSummary(data) {
+  const timestamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
+  return {
+    [`results/order-after-${timestamp}.json`]: JSON.stringify(data),
+  };
+}
