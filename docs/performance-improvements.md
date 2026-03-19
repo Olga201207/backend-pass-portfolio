@@ -19,9 +19,7 @@
 | 5 | 비동기 처리 (외부 API 4개) | avg 838ms / p95 927ms | avg 504ms / p95 606ms | 40% 감소 |
 | 6A | Cache Penetration (100 VU) | avg 80ms / p95 125ms (매 요청 DB 조회) | avg 17ms / p95 32ms (sentinel 캐시 히트) | 응답시간 79% 감소 |
 | 6B | Cache Avalanche (300 VU) | avg 180ms / p95 420ms / DB calls CV 0.81 | avg 131ms / p95 323ms / CV 0.36 | p95 23% 감소, 변동성 56% 감소 |
-| 6C | Hot Key (300 VU, 동일 ID) | avg 81ms / errors 0% / DB 300 calls | DB 2 calls (99.3% 감소) / avg 278ms / errors 11%* | DB 호출 99.3% 감소 |
-
-> *6C After 11% 에러: `MAX_RETRY_COUNT=40 × 5~20ms` 재시도 한계 초과. 300 VU가 동일 ID에 집중되고 TTL 500ms마다 반복 stampede 시 일부 VU 락 획득 실패 → `500 IllegalStateException`. DB는 여전히 2건만 조회 — DB 보호 목적은 달성하되, 극단적 집중 부하에서 일부 요청 실패라는 트레이드오프.
+| 6C | Hot Key (300 VU, 동일 ID) | avg 81ms / errors 0% / DB 300 calls | avg 394ms / p95 942ms / errors 0% / DB 2 calls | DB 호출 99.3% 감소, 에러 0% |
 
 ---
 
@@ -858,6 +856,9 @@ public Book findBookByIdWithLock(Long id) throws JsonProcessingException {
         boolean lockAcquired = distributedLockProvider.tryLock(lockKey, LOCK_TIMEOUT_MS);
 
         if (!lockAcquired) {
+            // 락 holder가 이미 캐시를 채웠을 수 있으므로 재확인
+            cached = redisTemplate.opsForValue().get(key);
+            if (cached != null) return deserialize(cached); // 캐시 히트 → 즉시 리턴
             long jitter = ThreadLocalRandom.current().nextLong(RETRY_DELAY_JITTER_MS);
             sleep(RETRY_DELAY_MS + jitter); // 5~20ms 대기 후 재시도
             continue;
@@ -922,32 +923,21 @@ k6 run hot-key-test.js --summary-export "results/scenario6c_hotkey-after.json"
 
 #### k6 실측 결과 (EC2 운영 환경, 300 VU / 30초)
 
-| 지표 | Before (락 없음) | After (분산 락 적용) | 비고 |
-|------|----------------|-------------------|------|
-| avg 응답시간 | 81ms | **278ms** | 락 획득/재시도 오버헤드 |
-| p(95) 응답시간 | 158ms | **1,500ms** | 재시도 큐 대기 |
-| 에러율 | **0%** | **11%** | 락 획득 실패 → 500 |
-| DB 호출 수 (초기 burst) | ~300 | **2** | **99.3% 감소** ✅ |
-| threshold (errors<5%) | ✅ | ❌ | - |
+| 지표 | Before (락 없음) | After (분산 락 적용) | 개선율 |
+|------|----------------|-------------------|--------|
+| avg 응답시간 | 81ms | **394ms** | 락 재시도 오버헤드 |
+| p(95) 응답시간 | 158ms | **942ms** | - |
+| 에러율 | 0% | **0%** | - |
+| DB 호출 수 (초기 burst) | ~300 | **2** | **99.3% 감소** |
+| threshold (errors<5%) | ✅ | ✅ | - |
 
-**After 11% 에러율 원인 분석**
-
-`MAX_RETRY_COUNT=40 × RETRY_DELAY_MS(5~20ms)` = 최대 ~800ms 대기 한도. 300 VU 전원이 동일 Book ID(=1)에 집중되고 TTL이 500ms이므로 캐시 갱신 주기마다 다시 stampede가 발생한다. 재시도 슬롯(40개)보다 경쟁 VU(300개)가 많으면 일부 VU는 40회 이내에 락을 획득하지 못하고 `IllegalStateException("Failed to acquire lock after 40")` → HTTP 500으로 이어진다.
-
-```
-300 VU → 락 경쟁 → 1 VU만 락 획득 → DB 조회 + 캐시 갱신
-                 → 나머지 299 VU 5~20ms × 최대 40회 대기
-                 → 대기 중 캐시 TTL(500ms) 재만료 → 또 다른 stampede
-                 → 재시도 한도 초과 VU → 500 에러 (약 11%)
-```
-
-이는 알려진 트레이드오프다: **DB 보호(300 → 2 calls) vs 일부 요청 실패(11%)** — 극단적 집중 부하에서 DB를 살리는 대신 일부 사용자가 오류를 받는다. 실무에서는 TTL을 늘리거나(`500ms → 30초`), 에러 응답 대신 stale 캐시를 반환하는 방식으로 완화한다.
+응답시간이 늘어난 이유: 300 VU 중 락을 획득하지 못한 VU는 5~20ms 간격으로 재시도하면서 대기하기 때문. DB 호출을 1~2건으로 막는 대신 지불하는 비용이다.
 
 > 측정 결과 파일: `k6-scripts/chapter6/results/scenario6c_hotkey-*.json`
 
 #### 어필 포인트
 
-실측 수치(300 → 2 DB calls)가 포트폴리오에서 가장 강력한 증거다. Cache Stampede 문제를 분산 락으로 해결하는 구체적 구현(Double-Checked Locking + 재시도 지터)을 제시하고, `setIfAbsent`의 원자성을 활용한 락 메커니즘을 이해하고 있음을 시연했다. 또한 11% 에러율을 솔직하게 분석하여 분산 락이 만능이 아님을 인지하고 트레이드오프를 제시할 수 있는 엔지니어링 판단력을 보여준다.
+실측 수치(300 → 2 DB calls)가 포트폴리오에서 가장 강력한 증거다. Cache Stampede 문제를 분산 락으로 해결하는 구체적 구현(Double-Checked Locking + 재시도 지터)을 제시하고, `setIfAbsent`의 원자성을 활용한 락 메커니즘을 이해하고 있음을 시연했다. 또한 초기 구현에서 락 획득 실패 시 캐시를 재확인하지 않는 문제를 발견하고 수정한 과정 — 락 실패 경로에서도 캐시를 먼저 확인해 재시도 슬롯 낭비를 제거 — 이 현업 표준 패턴에 대한 이해를 보여준다.
 
 ---
 

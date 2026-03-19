@@ -7,6 +7,7 @@ import ding.co.backendportfolio.chapter6._1_practice.Book;
 import ding.co.backendportfolio.chapter6._1_practice.BookRepository;
 import ding.co.backendportfolio.chapter6._3_remote_redis_real_example.DbCallChecker;
 import io.micrometer.core.instrument.MeterRegistry;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -29,7 +30,12 @@ public class ImprovedCacheAvalancheService {
     private final RedisTemplate<String, String> redisTemplate;
     private final ObjectMapper objectMapper;
     private final MeterRegistry meterRegistry;
-    private final DbCallChecker dbCallChecker = new DbCallChecker("JITTER 적용");
+    private DbCallChecker dbCallChecker;
+
+    @PostConstruct
+    private void init() {
+        this.dbCallChecker = new DbCallChecker(SERVICE_NAME, meterRegistry);
+    }
 
     // 캐시에 저장할 때 TTL에 Jitter 적용
     public Book findBookByIdWithJitter(Long id) throws JsonProcessingException {

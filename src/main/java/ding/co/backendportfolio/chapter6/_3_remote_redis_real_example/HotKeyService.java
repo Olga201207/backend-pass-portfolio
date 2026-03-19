@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ding.co.backendportfolio.chapter6._1_practice.Book;
 import ding.co.backendportfolio.chapter6._1_practice.BookRepository;
 import io.micrometer.core.instrument.MeterRegistry;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -29,7 +30,12 @@ public class HotKeyService {
     private final RedisTemplate<String, String> redisTemplate;
     private final ObjectMapper objectMapper;
     private final MeterRegistry meterRegistry;
-    private final DbCallChecker dbCallChecker = new DbCallChecker("JITTER 적용");
+    private DbCallChecker dbCallChecker;
+
+    @PostConstruct
+    private void init() {
+        this.dbCallChecker = new DbCallChecker(SERVICE_NAME, meterRegistry);
+    }
 
     // Hot Key 에 대한 방어로직이 없음
     public Book findBookByIdWithoutLock(Long id) throws JsonProcessingException {

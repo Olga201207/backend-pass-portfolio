@@ -7,6 +7,7 @@ import ding.co.backendportfolio.chapter6._1_practice.Book;
 import ding.co.backendportfolio.chapter6._1_practice.BookRepository;
 import ding.co.backendportfolio.chapter6._3_remote_redis_real_example.DbCallChecker;
 import io.micrometer.core.instrument.MeterRegistry;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -37,7 +38,12 @@ public class ImprovedHotKeyService {
     private final ObjectMapper objectMapper;
     private final DistributedLockProvider distributedLockProvider;
     private final MeterRegistry meterRegistry;
-    private final DbCallChecker dbCallChecker = new DbCallChecker("Hot Key + 락 적용");
+    private DbCallChecker dbCallChecker;
+
+    @PostConstruct
+    private void init() {
+        this.dbCallChecker = new DbCallChecker(SERVICE_NAME, meterRegistry);
+    }
 
     /**
      * 특정 책 정보 조회 시도

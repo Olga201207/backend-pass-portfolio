@@ -1,5 +1,6 @@
 package ding.co.backendportfolio.chapter6._3_remote_redis_real_example;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.LocalTime;
@@ -17,9 +18,11 @@ public class DbCallChecker {
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss.S");
 
     private final String name;
+    private final MeterRegistry meterRegistry;
 
-    public DbCallChecker(String name) {
+    public DbCallChecker(String name, MeterRegistry meterRegistry) {
         this.name = name;
+        this.meterRegistry = meterRegistry;
     }
 
     /**
@@ -32,6 +35,7 @@ public class DbCallChecker {
         dbSelectCountPerSecond
                 .computeIfAbsent(LocalTime.now().format(FORMATTER), k -> new AtomicLong(0))
                 .incrementAndGet();
+        meterRegistry.counter("db.select", "service", name).increment();
     }
 
     public void logDbCall() {
