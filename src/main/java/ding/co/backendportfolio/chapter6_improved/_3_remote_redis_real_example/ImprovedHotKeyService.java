@@ -74,9 +74,19 @@ public class ImprovedHotKeyService {
         for (int retry = 0; retry < MAX_RETRY_COUNT; retry++) {
             boolean lockAcquired = distributedLockProvider.tryLock(lockKey, LOCK_TIMEOUT_MS);
 
-            // 3-1. 락 획득 실패 시 잠깐 대기 후 다시 시도
+            // 3-1. 락 획득 실패 시 캐시 재확인 후 대기
             if (!lockAcquired) {
                 log.warn(">> 경쟁 발생 !! - key={}, retry={}", lockKey, retry);
+                // 락 holder가 이미 캐시를 채웠을 수 있으므로 재확인
+                cached = redisTemplate.opsForValue().get(key);
+                if (cached != null && cached.equals(NULL_VALUE)) {
+                    meterRegistry.counter("cache.hit", "service", SERVICE_NAME).increment();
+                    return null;
+                }
+                if (cached != null) {
+                    meterRegistry.counter("cache.hit", "service", SERVICE_NAME).increment();
+                    return objectMapper.readValue(cached, new TypeReference<>() {});
+                }
                 long jitter = ThreadLocalRandom.current().nextLong(RETRY_DELAY_JITTER_MS);
                 sleep(RETRY_DELAY_MS + jitter);
                 continue;

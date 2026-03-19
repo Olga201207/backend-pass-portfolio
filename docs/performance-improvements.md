@@ -17,8 +17,11 @@
 | 3 | 동시성 제어 (100 concurrent) | Race Condition 발생 | 정원 초과 0건 | - |
 | 4 | 통계 쿼리 (매 요청 집계) | 전체 집계 on-demand | 사전 집계 테이블 조회 | p95 목표 300ms |
 | 5 | 비동기 처리 (외부 API 4개) | avg 838ms / p95 927ms | avg 504ms / p95 606ms | 40% 감소 |
-| 6B | Cache Avalanche | 31,145 DB calls / CV 0.81 | 24,263 DB calls / CV 0.36 | 22% 감소, 변동성 56% 감소 |
-| 6C | Hot Key (동시 300) | 300 DB calls | 2 DB calls | 99.3% 감소 |
+| 6A | Cache Penetration (100 VU) | avg 80ms / p95 125ms (매 요청 DB 조회) | avg 17ms / p95 32ms (sentinel 캐시 히트) | 응답시간 79% 감소 |
+| 6B | Cache Avalanche (300 VU) | avg 180ms / p95 420ms / DB calls CV 0.81 | avg 131ms / p95 323ms / CV 0.36 | p95 23% 감소, 변동성 56% 감소 |
+| 6C | Hot Key (300 VU, 동일 ID) | avg 81ms / errors 0% / DB 300 calls | DB 2 calls (99.3% 감소) / avg 278ms / errors 11%* | DB 호출 99.3% 감소 |
+
+> *6C After 11% 에러: `MAX_RETRY_COUNT=40 × 5~20ms` 재시도 한계 초과. 300 VU가 동일 ID에 집중되고 TTL 500ms마다 반복 stampede 시 일부 VU 락 획득 실패 → `500 IllegalStateException`. DB는 여전히 2건만 조회 — DB 보호 목적은 달성하되, 극단적 집중 부하에서 일부 요청 실패라는 트레이드오프.
 
 ---
 
@@ -698,6 +701,19 @@ k6 run cache-penetration-test.js --summary-export "results/scenario6a_penetratio
 
 > k6 자체 지표(응답시간, 에러율)보다 **Grafana `db_select_total` 카운터**가 핵심 증거다. Before는 100 VU × 1분20초 내내 DB 호출이 지속되고, After는 초기 1회 이후 `db.select` 카운터가 멈추는 것을 확인한다.
 
+#### k6 실측 결과 (EC2 운영 환경, 100 VU / 1분 20초)
+
+| 지표 | Before (`BookRedisService`) | After (`ImprovedBookRedisService`) | 개선율 |
+|------|-----------------------------|------------------------------------|--------|
+| avg 응답시간 | 80ms | **17ms** | **79% 감소** |
+| p(95) 응답시간 | 125ms | **32ms** | **74% 감소** |
+| 에러율 | 0% | 0% | - |
+| threshold | ✅ | ✅ | - |
+
+핵심 차이는 응답시간이 아니라 **DB 호출 패턴**이다. Before는 100 VU × 80초 = 약 5,000회 이상 모두 DB까지 전파됐고, After는 첫 요청 1회만 DB 조회 후 5분간 캐시 히트. 응답시간 79% 감소는 DB 왕복 제거에서 비롯된다.
+
+> 측정 결과 파일: `k6-scripts/chapter6/results/scenario6a_penetration-*.json`
+
 #### 측정 방법
 
 **측정 목표**: DB 호출 수, 캐시 미스 → DB 전파율
@@ -788,6 +804,20 @@ k6 run cache-avalanche-test.js --summary-export "results/scenario6b_avalanche-af
 | **Grafana** (커스텀 패널) | `rate(db_select_total[5s])` 시계열 — Before vs After | DB 쿼리 스파이크 패턴, CV |
 | **Grafana** (Dashboard #763) | Redis Dashboard → Connected Clients, Ops/sec | Redis 부하 분포 |
 | **CloudWatch** | AWS/RDS → `CPUUtilization` — TTL 만료 시점 CPU 스파이크 비교 | DB CPU 스파이크 |
+
+#### k6 실측 결과 (EC2 운영 환경, 300 VU / 40초)
+
+| 지표 | Before (고정 TTL=1,000ms) | After (TTL + Jitter 0~500ms) | 개선율 |
+|------|--------------------------|------------------------------|--------|
+| avg 응답시간 | 180ms | **131ms** | **27% 감소** |
+| p(95) 응답시간 | 420ms | **323ms** | **23% 감소** |
+| 총 DB 쿼리 수 | 31,145 | 24,263 | **22% 감소** |
+| 변동계수 (CV) | 0.81 | **0.36** | **56% 감소** |
+| 에러율 | 0% | 0% | - |
+
+DB 쿼리 총량 감소보다 **CV 0.81 → 0.36** 변화가 핵심이다. 고정 TTL에서는 특정 10초 구간에 DB 호출이 집중(최대 초당 수백 건 스파이크)되는 반면, Jitter 적용 후 만료 시점이 분산되어 스파이크 높이가 절반 이하로 내려갔다.
+
+> 측정 결과 파일: `k6-scripts/chapter6/results/scenario6b_avalanche-*.json`
 
 #### 어필 포인트
 
@@ -890,9 +920,34 @@ k6 run hot-key-test.js --summary-export "results/scenario6c_hotkey-after.json"
 | **Grafana** (Dashboard #763) | Redis Dashboard → Keyspace Hits/Misses, Connected Clients | 락 키 동작 확인 |
 | **CloudWatch** | AWS/RDS → `DatabaseConnections` 피크값 비교 | DB 커넥션 폭발 방지 |
 
+#### k6 실측 결과 (EC2 운영 환경, 300 VU / 30초)
+
+| 지표 | Before (락 없음) | After (분산 락 적용) | 비고 |
+|------|----------------|-------------------|------|
+| avg 응답시간 | 81ms | **278ms** | 락 획득/재시도 오버헤드 |
+| p(95) 응답시간 | 158ms | **1,500ms** | 재시도 큐 대기 |
+| 에러율 | **0%** | **11%** | 락 획득 실패 → 500 |
+| DB 호출 수 (초기 burst) | ~300 | **2** | **99.3% 감소** ✅ |
+| threshold (errors<5%) | ✅ | ❌ | - |
+
+**After 11% 에러율 원인 분석**
+
+`MAX_RETRY_COUNT=40 × RETRY_DELAY_MS(5~20ms)` = 최대 ~800ms 대기 한도. 300 VU 전원이 동일 Book ID(=1)에 집중되고 TTL이 500ms이므로 캐시 갱신 주기마다 다시 stampede가 발생한다. 재시도 슬롯(40개)보다 경쟁 VU(300개)가 많으면 일부 VU는 40회 이내에 락을 획득하지 못하고 `IllegalStateException("Failed to acquire lock after 40")` → HTTP 500으로 이어진다.
+
+```
+300 VU → 락 경쟁 → 1 VU만 락 획득 → DB 조회 + 캐시 갱신
+                 → 나머지 299 VU 5~20ms × 최대 40회 대기
+                 → 대기 중 캐시 TTL(500ms) 재만료 → 또 다른 stampede
+                 → 재시도 한도 초과 VU → 500 에러 (약 11%)
+```
+
+이는 알려진 트레이드오프다: **DB 보호(300 → 2 calls) vs 일부 요청 실패(11%)** — 극단적 집중 부하에서 DB를 살리는 대신 일부 사용자가 오류를 받는다. 실무에서는 TTL을 늘리거나(`500ms → 30초`), 에러 응답 대신 stale 캐시를 반환하는 방식으로 완화한다.
+
+> 측정 결과 파일: `k6-scripts/chapter6/results/scenario6c_hotkey-*.json`
+
 #### 어필 포인트
 
-실측 수치(300 → 2 DB calls)가 포트폴리오에서 가장 강력한 증거다. Cache Stampede 문제를 분산 락으로 해결하는 구체적 구현(Double-Checked Locking + 재시도 지터)을 제시하고, `setIfAbsent`의 원자성을 활용한 락 메커니즘을 이해하고 있음을 시연했다.
+실측 수치(300 → 2 DB calls)가 포트폴리오에서 가장 강력한 증거다. Cache Stampede 문제를 분산 락으로 해결하는 구체적 구현(Double-Checked Locking + 재시도 지터)을 제시하고, `setIfAbsent`의 원자성을 활용한 락 메커니즘을 이해하고 있음을 시연했다. 또한 11% 에러율을 솔직하게 분석하여 분산 락이 만능이 아님을 인지하고 트레이드오프를 제시할 수 있는 엔지니어링 판단력을 보여준다.
 
 ---
 
@@ -997,7 +1052,7 @@ k6 스크립트에 `sleep(1)`이 있으면 `iteration_duration ≈ http_req_dura
 | 5 비동기 | `chapter5/async-test.js` | `GET /api/chapter5/movies/{id}` | `GET /api/chapter5improved/movies/{id}` | 20 VU / 3분 | p95 < 1500ms |
 | 6C Hot Key | `chapter6/hot-key-test.js` | `GET /api/chapter6/books/{id}` | `GET /api/chapter6improved/books/{id}` | 300 VU / 30초 | errors < 0.05 |
 | 6B Avalanche | `chapter6/cache-avalanche-test.js` | `GET /api/chapter6/books/{id}/avalanche` | `GET /api/chapter6improved/books/{id}/avalanche` | 300 VU / 40초 | errors < 0.05 |
-| 6A Penetration | `chapter6/cache-penetration-test.js` | `GET /api/chapter6/books/{id}` (없는 ID) | `GET /api/chapter6improved/books/{id}` (없는 ID) | 100 VU / 1분 20초 | errors < 0.05 |
+| 6A Penetration | `chapter6/cache-penetration-test.js` | `GET /api/chapter6/books/{id}/penetration` (없는 ID) | `GET /api/chapter6improved/books/{id}/penetration` (없는 ID) | 100 VU / 1분 20초 | errors < 0.05 |
 
 #### Before/After 전환 방법 (STRATEGY 환경변수)
 
