@@ -16,7 +16,7 @@
 | 2 | Bulk Insert (1440건) | 1,440회 개별 INSERT | 배치 단위 처리 | DB 왕복 대폭 감소 |
 | 3 | 동시성 제어 (100 concurrent) | Race Condition 발생 | 정원 초과 0건 | - |
 | 4 | 통계 쿼리 (매 요청 집계) | 전체 집계 on-demand | 사전 집계 테이블 조회 | p95 목표 300ms |
-| 5 | 비동기 처리 (외부 API 3개) | 응답시간 = 각 지연 합산 | 응답시간 = 최장 단일 지연 | 직렬 → 병렬 |
+| 5 | 비동기 처리 (외부 API 4개) | avg 838ms / p95 927ms | avg 504ms / p95 606ms | 40% 감소 |
 | 6B | Cache Avalanche | 31,145 DB calls / CV 0.81 | 24,263 DB calls / CV 0.36 | 22% 감소, 변동성 56% 감소 |
 | 6C | Hot Key (동시 300) | 300 DB calls | 2 DB calls | 99.3% 감소 |
 
@@ -93,7 +93,7 @@ List<HotelEntityGraph> findAll();
 |----|----------|----------|
 | **Grafana** (커스텀 패널) | PromQL: `app_query_per_request_sum / app_query_per_request_count` (path 태그 필터) | 요청당 평균/p95 쿼리 수 |
 | **Grafana** (Dashboard #19004) | Spring Boot Observability → HTTP Request Duration (path 필터) | p95 응답시간 |
-| **Grafana** (Dashboard #14091) | HikariCP → Active Connections | DB 커넥션 사용량 |
+| **Grafana** (Dashboard #19004) | Spring Boot Observability → HikariCP 패널 | DB 커넥션 사용량 |
 | **k6** | `load-test.js` 변형 — hotel 엔드포인트로 교체, 30 VU / 3분 | throughput, p95 latency |
 | **CloudWatch** | AWS/RDS → `DatabaseConnections`, `CPUUtilization` | DB 부하 |
 
@@ -251,15 +251,69 @@ public void joinEventOptimistic(Long eventId, Long memberId) {
 - DB 락 없이 낮은 충돌 환경에서 처리량 극대화
 - `saveAndFlush()` 필수: JPA 특성상 INSERT 먼저 실행되면 FK 공유락으로 데드락 발생 방지
 
-**전략 3. Named Lock**
+**전략 3-A. MySQL Named Lock (시도 → 실패)**
 ```java
 // GET_LOCK('event:1', 3) → 3초 타임아웃으로 MySQL 사용자 정의 락 획득
 // REQUIRES_NEW 트랜잭션으로 락과 데이터 트랜잭션 분리
 @Transactional(propagation = Propagation.REQUIRES_NEW)
 public void joinEventWithNamedLock(Long eventId, Long memberId) { ... }
+
+// Facade: while(true) + sleep(50ms) 재시도 루프
+@Transactional  // ← 이것이 문제
+public void joinEvent(Long eventId, Long memberId) {
+    while (true) {
+        try {
+            eventWithLockService.joinEventWithNamedLock(eventId, memberId);
+            return;
+        } catch (Exception e) {
+            Thread.sleep(50);  // 커넥션 점유 중 대기
+        }
+    }
+}
 ```
-- 분산 환경(멀티 인스턴스)에서도 동작
-- 별도 DB 커넥션 사용으로 커넥션 풀 고려 필요
+
+**MySQL Named Lock 실패 원인: DB 커넥션 풀 고갈**
+
+MySQL Named Lock은 `GET_LOCK()`/`RELEASE_LOCK()`이 **세션(커넥션) 단위**로 동작한다. 이를 정상 동작시키려면 락 획득과 해제가 **동일한 DB 커넥션**에서 이루어져야 한다.
+
+문제는 `@Transactional` + `while(true) + sleep(50ms)` 재시도 루프의 조합이었다:
+
+1. Facade의 `@Transactional`이 트랜잭션 시작 시 커넥션 1개를 획득
+2. while 루프 내에서 락 획득 실패 시 `sleep(50ms)` 대기 → **커넥션을 점유한 채로 대기**
+3. `REQUIRES_NEW` 서비스 호출도 추가 커넥션 1개를 요구
+4. 100 VU × 2 커넥션 = 200개 필요 → HikariCP 기본 풀(10개)이 즉시 고갈
+5. 커넥션 대기 timeout(30초) 후 500 에러 → **에러율 84.77%**, p95 = 1m 0s (timeout)
+
+`@Transactional`을 제거하면 세션 일관성이 깨져 `RELEASE_LOCK()`이 다른 커넥션에서 실행되어 락 해제가 불가능해지는 딜레마가 있었다.
+
+**전략 3-B. Redis Named Lock (해결)**
+
+Named Lock의 개념(분산 락)은 유지하되, MySQL 세션 의존성 문제를 Redis `setIfAbsent`(원자적 SET NX)로 해결했다.
+
+```java
+// RedisNamedLockEventFacade: @Transactional 없음 → 커넥션 점유 없음
+public void joinEvent(Long eventId, Long memberId) throws InterruptedException {
+    String lockKey = "event-lock:" + eventId;
+    for (int retry = 0; retry < MAX_RETRY; retry++) {  // 최대 100회
+        if (!distributedLockProvider.tryLock(lockKey, 5_000)) {
+            Thread.sleep(50);  // 커넥션 미점유 상태로 대기
+            continue;
+        }
+        try {
+            eventWithLockService.joinEventWithNamedLock(eventId, memberId);
+            return;
+        } catch (IllegalStateException e) {
+            throw e;  // 정원 초과 → 즉시 실패 (재시도 안 함)
+        } finally {
+            distributedLockProvider.releaseLock(lockKey);
+        }
+    }
+}
+```
+
+- Redis `setIfAbsent`는 세션과 무관하게 원자적으로 동작 → 커넥션 풀 문제 없음
+- while 루프 중 DB 커넥션 미점유 → HikariCP 부하 없음
+- 분산 환경(멀티 인스턴스)에서도 동일하게 동작
 
 ### 개선 결과
 
@@ -268,7 +322,62 @@ public void joinEventWithNamedLock(Long eventId, Long memberId) { ... }
 | 락 없음 (before) | 정원 초과 발생 | Race Condition |
 | 비관적 락 | 정원 초과 0건 | 즉시 DB 잠금, 데드락 주의 |
 | 낙관적 락 | 정원 초과 0건 | 재시도 로직 필요, 저충돌 최적 |
-| Named Lock | 정원 초과 0건 | 분산 환경 적합 |
+| MySQL Named Lock | 정원 초과 0건 (단, 에러율 84.77%) | DB 커넥션 풀 고갈로 사실상 실패 |
+| Redis Named Lock | 정원 초과 0건 | 분산 환경 적합, DB 커넥션 무관 |
+
+### k6 실측 결과 (EC2 운영 환경, 100 VU / 50s)
+
+| 전략 | avg | p(95) | RPS | 에러율 | threshold |
+|------|-----|-------|-----|--------|-----------|
+| 비관적 락 | 206ms | 360ms | 240/s | 0% | ✅ |
+| 낙관적 락 | 134ms | 255ms | 296/s | 0% | ✅ |
+| MySQL Named Lock | 30,450ms | 60,000ms (timeout) | 2.8/s | **84.77%** | ❌ |
+| Redis Named Lock | 772ms | 2,239ms | 90/s | 0% | ✅ |
+
+> `http_req_failed` 수치가 99%로 높게 보이는 것은 k6가 기본적으로 4xx 응답을 HTTP 실패로 집계하기 때문이다. 정원 초과 시 반환하는 400 응답이 대부분을 차지하며, 이는 의도된 동작이다. 비즈니스 로직 기준 에러율(`errors` 커스텀 메트릭)은 모두 0%다. (MySQL Named Lock은 커넥션 풀 고갈로 인한 500 에러가 원인)
+
+**전략별 특성 분석**
+- **낙관적 락**: 충돌 시 즉시 실패(정원 초과 `IllegalStateException` throw)하므로 응답시간이 가장 짧음. 대기 없이 빠르게 결과 반환.
+- **비관적 락**: DB X-lock으로 순차 처리. 대기가 발생하지만 안정적.
+- **MySQL Named Lock**: `@Transactional` + 재시도 루프로 커넥션 점유 시간이 길어 100 VU에서 커넥션 풀 고갈 → 실용적이지 않음.
+- **Redis Named Lock**: 락 획득 재시도(최대 100회 × 50ms) 오버헤드로 응답시간이 높음. 단, DB 커넥션 풀과 무관하게 동작하는 분산 환경 장점이 있음.
+
+### Grafana 모니터링 관측 (시나리오 3)
+
+k6 실행 중 Grafana 대시보드(#4701 JVM, #19004 Spring Boot Observability)에서 다음을 관측했다.
+
+**비관적 락 (16:51 KST 구간)**
+- CPU Usage: 순간 99% spike → 즉시 하강. `SELECT FOR UPDATE`로 DB가 순차 처리하므로 CPU 급등 후 빠르게 안정화.
+- Threads: 100 VU 진입 시 ~110개로 증가, ramp-down 후 즉시 감소. 대기 없이 빠른 처리를 반영.
+
+**Redis Named Lock + 낙관적 락 (18:35, 18:45 KST 구간)**
+- CPU Usage: 2개의 독립적인 spike — 각 전략이 순차적으로 실행된 것을 시각적으로 구분 가능.
+- Threads: Redis Named Lock 구간에서 재시도 루프로 인해 스레드가 더 오래 활성화되는 패턴. 낙관적 락은 짧은 spike 후 즉시 감소.
+
+> 측정 결과 파일: `k6-scripts/chapter4/results/scenario3_concurrency-*.json`
+
+### k6 실행 명령어
+
+```powershell
+cd k6-scripts/chapter4
+$env:BASE_URL="http://<EC2_IP>:8080/api"; $env:EVENT_ID="1"
+$env:TEST_EMAIL="k6test@test.com"; $env:TEST_PASSWORD="password123"
+
+# 비관적 락
+curl -X POST "http://<EC2_IP>:8080/api/chapter4/events/1/reset"
+$env:STRATEGY="pessimistic"
+k6 run concurrency-test.js --summary-export "results/scenario3_concurrency-pessimistic.json"
+
+# Redis Named Lock
+curl -X POST "http://<EC2_IP>:8080/api/chapter4/events/1/reset"
+$env:STRATEGY="redis-named"
+k6 run concurrency-test.js --summary-export "results/scenario3_concurrency-redis-named.json"
+
+# 낙관적 락
+curl -X POST "http://<EC2_IP>:8080/api/chapter4/events/1/reset"
+$env:STRATEGY="optimistic"
+k6 run concurrency-test.js --summary-export "results/scenario3_concurrency-optimistic.json"
+```
 
 ### 측정 방법
 
@@ -278,7 +387,7 @@ public void joinEventWithNamedLock(Long eventId, Long memberId) { ... }
 |----|----------|----------|
 | **k6** | `chapter4-load-test.js` — 50→100 VU ramp-up, `errors` rate < 0.1 threshold | throughput, error rate |
 | **k6** | `http_req_duration{scenario:order-search}` p95 < 400ms 임계값으로 락 전략별 비교 | 응답시간 분포 |
-| **Grafana** (Dashboard #14091) | HikariCP → `hikaricp_connections_pending` (커넥션 대기 큐) | DB 커넥션 경합 |
+| **Grafana** (Dashboard #19004) | Spring Boot Observability → HikariCP 패널 → `hikaricp_connections_pending` | DB 커넥션 경합 |
 | **Grafana** (Dashboard #4701) | JVM Threads → peak thread count | 스레드 사용량 |
 | **CloudWatch** | AWS/RDS → `DatabaseConnections` (락 전략별 피크값 비교) | DB 연결 수 |
 
@@ -335,8 +444,52 @@ public Page<OrderStatisticsResponse> getOrderStatistics(Long minAmount, Pageable
 |------|--------|-------|
 | 쿼리 방식 | 매 요청마다 전체 집계 | 사전 집계 테이블 단순 조회 |
 | DB 부하 | 요청 수에 비례한 집계 부하 | 3분 주기 1회 집계로 고정 |
-| 응답시간 목표 | 미달 | p95 300ms 달성 |
+| 응답시간 목표 | 미달 | p95 99ms 달성 |
 | 데이터 신선도 | 실시간 | 최대 3분 지연 |
+
+### k6 실측 결과 (EC2 운영 환경, 50→100 VU / 8분)
+
+| 지표 | Before (on-demand 집계) | After (사전 집계 테이블) | 개선율 |
+|------|------------------------|------------------------|--------|
+| avg 응답시간 | 32,836ms | **42ms** | **99.9% 감소** |
+| p(95) 응답시간 | 60,000ms (timeout) | **99ms** | **99.8% 감소** |
+| 에러율 | 100% | 0% | - |
+| RPS | 2.0/s | **65.8/s** | **33배 향상** |
+
+> 측정 결과 파일: `k6-scripts/chapter3/results/scenario4_stats-*.json`
+
+### k6 실행 명령어
+
+```powershell
+cd k6-scripts/chapter3
+$env:BASE_URL="http://<EC2_IP>:8080/api"
+
+# Before (on-demand 집계)
+$env:STRATEGY="before"
+k6 run stats-test.js --summary-export "results/scenario4_stats-before.json"
+
+# After (사전 집계 테이블)
+$env:STRATEGY="after"
+k6 run stats-test.js --summary-export "results/scenario4_stats-after.json"
+```
+
+**발견된 한계**: `ch3_order_stats`에 `total_amount` 인덱스가 없으면 사전 집계 테이블도 full scan 발생. 인덱스 추가 필수. 또한 스케줄러 refresh(3분 주기, ~10s 소요) 실행 중에는 write lock으로 읽기 지연이 발생할 수 있음. 완전한 해결을 위해서는 shadow table swap 또는 read replica 분리가 필요하다.
+
+### CloudWatch / JVM 모니터링 관측 (시나리오 4)
+
+**CloudWatch RDS CPU (Before)**
+- Before 테스트(100 VU, on-demand 집계): RDS CPU Utilization이 **50~90%까지 급등**, 약 45분간 고부하 지속.
+- 매 요청마다 `GROUP BY` + `SUM`/`COUNT` 집계가 실행되어 DB가 bottleneck이 됨을 CloudWatch로 직접 확인.
+- EC2 CPU는 상대적으로 평탄(20~30%) — 병목이 애플리케이션이 아닌 **DB**에 있음을 입증.
+
+**CloudWatch RDS CPU Before/After 비교 (빨간 수직선 기준)**
+- 빨간선 왼쪽(Before): RDS CPU 50~100% 진동
+- 빨간선 오른쪽(After): RDS CPU **거의 0%** — 사전 집계 테이블 단순 조회로 DB 부하 사라짐.
+
+**JVM 대시보드 (#4701)**
+- Before 구간: JVM Heap 사용량 ~770 MiB peak (집계 결과 객체 생성으로 GC 압박), process CPU 93% peak.
+- After 구간: Heap 사용량 정상화(~300 MiB), CPU 급격히 감소.
+- Threads: Before 구간에서 peak 150~180개 (30초 타임아웃 대기 스레드 적체), After 구간에서 정상 30~40개.
 
 ### 측정 방법
 
@@ -361,17 +514,19 @@ public Page<OrderStatisticsResponse> getOrderStatistics(Long minAmount, Pageable
 
 ### 문제 상황
 
-영화 상세 조회 API가 3개의 외부 API(랭킹, 예매 가능 여부, 추천 영화)를 순차적으로 호출했다. 각 API의 응답 지연이 그대로 합산되어 전체 응답시간이 늘어났다.
+영화 상세 조회 API가 4개의 독립적인 외부 호출(랭킹, 예매 가능 여부, 추천 영화, 사용자 관심도 이벤트)을 순차적으로 실행했다. 각 호출이 200ms씩 대기하므로 응답시간이 그대로 합산됐다.
 
 ```
-// Before: 순차 호출
-랭킹 API (300ms) → 예매 가능 여부 API (200ms) → 추천 영화 API (400ms)
-총 응답시간 = 300 + 200 + 400 = 900ms
+// Before: 순차 호출 (각 200ms sleep)
+getRanking(200ms) → isAvailable(200ms) → getRecommendedMovieIds(200ms) → emitUserInterest(200ms)
+총 응답시간 ≈ 800ms + 서버 처리 오버헤드
 ```
+
+특히 `emitUserInterest()`는 결과를 응답에 사용하지 않는 fire-and-forget 이벤트임에도 불구하고 동기 호출로 사용자 응답을 200ms 추가로 지연시켰다.
 
 ### 원인 분석
 
-3개의 외부 API 호출이 서로 독립적임에도 불구하고 순차적으로 실행되었다. 각 API 호출은 이전 API의 결과를 필요로 하지 않으므로 병렬 처리가 가능한 구조였다.
+4개의 호출이 서로 독립적임에도 불구하고 순차적으로 실행되었다. 각 호출은 이전 결과를 필요로 하지 않으므로 병렬 처리가 가능한 구조였다.
 
 ### 해결 방법
 
@@ -416,9 +571,65 @@ CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
 
 | 항목 | Before | After |
 |------|--------|-------|
-| 호출 방식 | 순차 (직렬) | 병렬 (비동기) |
-| 응답시간 계산 | 각 API 지연 합산 | 최장 단일 API 지연 |
-| 예시 (300+200+400ms) | 900ms | **400ms** (55% 단축) |
+| 호출 방식 | 순차 (직렬) | 병렬 (비동기 CompletableFuture) |
+| 응답시간 계산 | 4개 API 지연 합산 | 최장 단일 API 지연 (interestEmitter 제외) |
+| 이론값 (각 200ms × 4) | ~800ms | ~200ms (75% 단축) |
+| `emitUserInterest` | 동기, 응답 전 실행 | `@Async` fire-and-forget, 응답에 영향 없음 |
+
+### k6 실측 결과 (EC2 운영 환경, 20 VU / 3분)
+
+| 지표 | Before (순차 동기) | After (CompletableFuture 병렬) | 개선율 |
+|------|-----------------|-------------------------------|--------|
+| avg 응답시간 | 838ms | **504ms** | **40% 감소** |
+| p(95) 응답시간 | 927ms | **606ms** | **35% 감소** |
+| min 응답시간 | 815ms | **216ms** | - |
+| 에러율 | 0% | 0% | - |
+| threshold | ✅ | ✅ | - |
+
+> After의 min 216ms는 async 스레드가 즉시 할당됐을 때의 이론값(~200ms)에 근접한 결과다.
+> avg가 이론값(~250ms)보다 높은 504ms인 이유: `AsyncConfig`의 `maxPoolSize=30`인데 20 VU × 3 병렬 호출 = 최대 60개 async 스레드 동시 필요 → 큐 대기 발생. corePoolSize/maxPoolSize를 높이면 추가 개선 가능.
+
+> 측정 결과 파일: `k6-scripts/chapter5/results/scenario5_async-*.json`
+
+### k6 실행 명령어
+
+```powershell
+cd k6-scripts/chapter5
+$env:BASE_URL="http://<EC2_IP>:8080/api"
+$env:MOVIE_ID="1"
+
+# 영화 데이터 시딩 (최초 1회)
+curl -X POST "http://<EC2_IP>:8080/api/chapter5/movies/setup?count=100"
+
+# Before (순차 동기)
+$env:STRATEGY="sync"
+k6 run async-test.js --summary-export "results/scenario5_async-before.json"
+
+# After (CompletableFuture 병렬)
+$env:STRATEGY="async"
+k6 run async-test.js --summary-export "results/scenario5_async-after.json"
+```
+
+### Grafana 모니터링 관측 (시나리오 5)
+
+**HTTP Statistics (Spring Boot Observability #19004) — 22:10~22:20 KST**
+
+- `/api/chapter5/movies/{movieId}` (sync): Response Time avg **828ms**, max 891ms
+- `/api/chapter5improved/movies/{movieId}` (async): Response Time avg **455ms**, max 553ms, min **210ms**
+- Request Count 차트에서 두 엔드포인트가 시간 순서로 명확히 분리되어 확인됨
+
+**JVM Threads (#4701) — 22:05~22:30 KST**
+
+| 구간 | live 스레드 수 | 의미 |
+|------|-------------|------|
+| 테스트 전 (baseline) | ~25개 | JVM 기본 스레드만 |
+| sync 구간 (22:11~22:15) | ~35개 | tomcat-exec 20개 추가 |
+| async 구간 (22:15~22:19) | **~55개** | tomcat-exec + `AsyncThread-*` 풀 추가 활성화 |
+| 테스트 종료 후 | ~45개 | `corePoolSize=15` 스레드가 idle 상태로 대기 유지 |
+
+async 구간에서 스레드가 ~20개 추가되는 것이 CompletableFuture 병렬 처리의 메커니즘을 직접 입증한다. 또한 종료 후에도 스레드가 줄어들지 않는 것은 `corePoolSize=15` 설정으로 인해 executor 스레드가 상시 대기 중임을 보여준다 — 이 상시 대기가 첫 번째 async 요청의 스레드 생성 지연을 제거한다.
+
+> **CloudWatch EC2 CPU 미사용 이유**: 시나리오 5의 "외부 API 호출"은 실제로 `Thread.sleep(200ms)`로 구현된 시뮬레이션이다. CPU를 사용하지 않는 I/O wait이므로 EC2 CPU Utilization은 sync/async 모두 3~4%로 측정되어 의미 있는 차이가 없다.
 
 ### 측정 방법
 
@@ -426,13 +637,12 @@ CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
 
 | 툴 | 사용 방법 | 측정 지표 |
 |----|----------|----------|
-| **k6** | 커스텀 스크립트 — `/api/movies/{id}` 엔드포인트, 20 VU / 2분 | p50/p95 응답시간 |
-| **k6** | `http_req_duration` 히스토그램으로 Before(직렬) / After(비동기) 분포 비교 | 응답시간 분포 |
-| **Grafana** (Dashboard #4701) | JVM Threads → tomcat-exec pool + async-task pool thread 수 | 스레드 사용량 |
-| **Grafana** (Dashboard #19004) | HTTP Request Duration 시계열 | 응답시간 Before/After |
-| **CloudWatch** | AWS/EC2 → `CPUUtilization` (비동기 처리로 인한 CPU 활용률 변화) | CPU 사용 패턴 |
+| **k6** | `async-test.js` — `STRATEGY=sync|async`, 20 VU / 3분, `p(95)<1500ms` threshold | p50/p95 응답시간 |
+| **k6** | `http_req_duration` Before(직렬) / After(비동기) 비교 | 응답시간 분포 |
+| **Grafana** (Dashboard #19004) | HTTP Statistics → Response Time (path: `/movies/{id}` 필터) | 응답시간 Before/After |
+| **Grafana** (Dashboard #4701) | JVM Threads → live/daemon/peak 추이 | 비동기 스레드 풀 활성화 패턴 |
 
-`AsyncConfig`의 `corePoolSize`/`maxPoolSize` 설정값이 Grafana JVM Threads 패널에 실시간 반영됨
+`AsyncConfig`의 `corePoolSize(15)`/`maxPoolSize(30)` 설정값이 Grafana JVM Threads 패널에 실시간 반영됨
 
 ### 어필 포인트
 
@@ -453,12 +663,40 @@ Blocking I/O 병목을 인식하고 `CompletableFuture`로 Non-blocking 비동�
 DB 조회 결과가 `null`인 경우에도 `NULL_VALUE("__NULL__")` 센티넬 값을 캐시에 저장하고, 조회 시 센티넬 값이면 `null`을 반환하도록 처리했다.
 
 ```java
-// NULL 결과도 캐싱 (TTL 5분)
+// Before: BookRedisService — null이면 캐시 저장 안 함 → 매 요청마다 DB 조회
+if (bookFromDb != null) {
+    redisTemplate.opsForValue().set(id.toString(), serialized, 1, TimeUnit.HOURS);
+}
+return bookFromDb; // null이면 캐시 없음 → 다음 요청도 DB 조회
+
+// After: ImprovedBookRedisService — null이어도 sentinel 캐싱 (TTL 5분)
 if (bookFromDb == null) {
     redisTemplate.opsForValue().set(id.toString(), NULL_VALUE, 5, TimeUnit.MINUTES);
-    return null;
+    return null; // 5분간 DB 조회 없음
 }
 ```
+
+#### k6 실행 명령어
+
+```powershell
+cd k6-scripts/chapter6
+$env:BASE_URL="http://<EC2_IP>:8080/api"
+
+# 데이터 시딩 (최초 1회 — 6A/B/C 공통)
+curl -X POST "http://<EC2_IP>:8080/api/chapter6/books/setup?count=1000"
+
+# Before (BookRedisService: null 캐싱 없음 → 매 요청마다 DB 조회)
+# 엔드포인트: GET /api/chapter6/books/{id}/penetration
+$env:STRATEGY="before"; $env:NONEXISTENT_ID="99999"
+k6 run cache-penetration-test.js --summary-export "results/scenario6a_penetration-before.json"
+
+# After (ImprovedBookRedisService: NULL_VALUE sentinel 5분 TTL → 첫 요청 이후 캐시 히트)
+# 엔드포인트: GET /api/chapter6improved/books/{id}/penetration
+$env:STRATEGY="after"
+k6 run cache-penetration-test.js --summary-export "results/scenario6a_penetration-after.json"
+```
+
+> k6 자체 지표(응답시간, 에러율)보다 **Grafana `db_select_total` 카운터**가 핵심 증거다. Before는 100 VU × 1분20초 내내 DB 호출이 지속되고, After는 초기 1회 이후 `db.select` 카운터가 멈추는 것을 확인한다.
 
 #### 측정 방법
 
@@ -466,9 +704,9 @@ if (bookFromDb == null) {
 
 | 툴 | 사용 방법 | 측정 지표 |
 |----|----------|----------|
-| **k6** | 존재하지 않는 ID로 반복 요청 (300 VU, 1분) | DB call 수 (`db.select` 카운터) |
-| **Grafana** (커스텀 패널) | `cache_miss_total` / `db_select_total` Counter (service 태그 필터) | 캐시 미스 → DB 전파율 |
-| **Grafana** (Dashboard #763) | Redis Dashboard → Hit Rate (`redis_keyspace_hits / (hits+misses)`) | Redis 히트율 |
+| **k6** | 존재하지 않는 ID(99999)로 반복 요청, 100 VU / 1분 20초 | 응답시간, 에러율 |
+| **Grafana** (커스텀 패널) | `db_select_total` Counter (service=`book-penetration` 태그) | DB 호출 수 Before vs After |
+| **Grafana** (Dashboard #763) | Redis Dashboard → Keyspace Hits/Misses | Redis 히트율 변화 |
 
 #### 어필 포인트
 
@@ -520,6 +758,36 @@ CV(변동계수) 0.81 → 0.36: DB 쿼리 부하의 시간적 편차가 절반 �
 | **CloudWatch** | AWS/RDS → `CPUUtilization` — TTL 만료 시점 CPU 스파이크 비교 | DB CPU 스파이크 |
 
 CV(변동계수) = stddev(DB calls per second) / mean 으로 부하 평탄화 정도 정량화
+
+#### k6 실행 명령어
+
+```powershell
+cd k6-scripts/chapter6
+$env:BASE_URL="http://<EC2_IP>:8080/api"
+# (데이터 시딩은 6A에서 이미 완료)
+
+# Before (고정 TTL=1,000ms → 동시 만료 → DB 쏠림)
+# setup()이 자동으로 캐시 클리어 후 시작
+$env:STRATEGY="before"; $env:TOTAL_BOOKS="1000"
+k6 run cache-avalanche-test.js --summary-export "results/scenario6b_avalanche-before.json"
+
+# After (TTL=1,000~1,500ms 지터 → 만료 분산)
+$env:STRATEGY="after"
+k6 run cache-avalanche-test.js --summary-export "results/scenario6b_avalanche-after.json"
+```
+
+> `DbCallChecker`가 초당 DB 호출 수를 기록하고 CV(변동계수)를 계산해 출력한다. Grafana `db_select_total` 시계열로 Before의 급격한 스파이크 vs After의 평탄한 분포를 시각화한다.
+
+#### 측정 방법
+
+**측정 목표**: DB 쿼리 스파이크 패턴, 부하 평탄화 정도
+
+| 툴 | 사용 방법 | 측정 지표 |
+|----|----------|----------|
+| **k6** | 캐시 클리어 후 300 VU → 1,000개 Book에 분산 요청, 40초 | 응답시간, 에러율 |
+| **Grafana** (커스텀 패널) | `rate(db_select_total[5s])` 시계열 — Before vs After | DB 쿼리 스파이크 패턴, CV |
+| **Grafana** (Dashboard #763) | Redis Dashboard → Connected Clients, Ops/sec | Redis 부하 분포 |
+| **CloudWatch** | AWS/RDS → `CPUUtilization` — TTL 만료 시점 CPU 스파이크 비교 | DB CPU 스파이크 |
 
 #### 어필 포인트
 
@@ -591,16 +859,36 @@ public Book findBookByIdWithLock(Long id) throws JsonProcessingException {
 
 DB 호출 2건: 락 경합 과정에서 극히 드물게 발생한 2건으로, 이론적으로 1건이 목표.
 
+#### k6 실행 명령어
+
+```powershell
+cd k6-scripts/chapter6
+$env:BASE_URL="http://<EC2_IP>:8080/api"
+# (데이터 시딩은 6A에서 이미 완료)
+
+# Before: 캐시 클리어 후 동일 ID(1번 Book)에 300 VU 집중 → 캐시 미스 → DB 300건 동시 조회
+curl -X DELETE "http://<EC2_IP>:8080/api/chapter6/books/cache"
+$env:STRATEGY="before"; $env:BOOK_ID="1"
+k6 run hot-key-test.js --summary-export "results/scenario6c_hotkey-before.json"
+
+# After: 캐시 클리어 후 동일 ID에 300 VU 집중 → 분산 락으로 DB 1~2건만 조회
+curl -X DELETE "http://<EC2_IP>:8080/api/chapter6/books/cache"
+$env:STRATEGY="after"; $env:BOOK_ID="1"
+k6 run hot-key-test.js --summary-export "results/scenario6c_hotkey-after.json"
+```
+
+> **캐시 클리어 필수**: 캐시가 이미 채워진 상태면 Before/After 모두 DB를 조회하지 않아 차이가 보이지 않는다. 각 실행 직전 `DELETE /api/chapter6/books/cache`로 Redis를 비워야 Stampede 상황이 재현된다.
+
 #### 측정 방법
 
 **측정 목표**: DB 호출 수 (분산 락 전후), Redis 락 키 동작 확인
 
 | 툴 | 사용 방법 | 측정 지표 |
 |----|----------|----------|
-| **k6** | 동일 Book ID에 300 VU 동시 요청 (캐시 만료 직후 타이밍) | DB calls 총합 (`db.select` 카운터) |
-| **Grafana** (커스텀 패널) | `db_select_total` Counter — 분산 락 전후 비교 (service 태그 필터) | DB 호출 수 (300 → 2) |
-| **Grafana** (Dashboard #763) | Redis Dashboard → Connected Clients, Keyspace Hits | Redis 락 키 동작 확인 |
-| **CloudWatch** | AWS/RDS → `DatabaseConnections` 피크값 비교 | DB 커넥션 폭발 방지 확인 |
+| **k6** | 동일 Book ID에 300 VU 동시 요청, 캐시 클리어 직후 | 응답시간, 에러율 |
+| **Grafana** (커스텀 패널) | `db_select_total` Counter — Before(300) vs After(1~2) | DB 호출 수 감소 |
+| **Grafana** (Dashboard #763) | Redis Dashboard → Keyspace Hits/Misses, Connected Clients | 락 키 동작 확인 |
+| **CloudWatch** | AWS/RDS → `DatabaseConnections` 피크값 비교 | DB 커넥션 폭발 방지 |
 
 #### 어필 포인트
 
@@ -624,7 +912,7 @@ DB 호출 2건: 락 경합 과정에서 극히 드물게 발생한 2건으로, �
 |-------------|------|----------|
 | **4701** | JVM (Micrometer) | Heap/Non-heap memory, GC pause, JVM threads |
 | **19004** | Spring Boot Observability | HTTP req rate, p50/p95/p99 latency, error rate, DB pool |
-| **14091** | HikariCP | active/idle/pending connections, acquisition time |
+| **14091** | Redis Dashboard | memory usage, ops/sec, hit rate, connected clients (※ HikariCP 전용 대시보드 미사용) |
 | **763** | Redis Dashboard (시나리오 6A/B/C 전용) | memory usage, ops/sec, hit rate, connected clients |
 | **커스텀** | Query Count | `app.query.per_request` p95 (path별) |
 
@@ -768,7 +1056,8 @@ mysql -u portfolio_user -p portfolio < src/main/resources/chapter6/mock-data.sql
 docker-compose up -d
 
 # 2. Grafana 접속 (http://localhost:3001) → Dashboards → Import
-#    Dashboard ID 입력: 4701, 19004, 14091, 763
+#    Dashboard ID 입력: 4701, 19004, 763
+#    (14091은 Redis 대시보드 — chapter6 시나리오 전용)
 #    Data Source: Prometheus (http://prometheus:9090)
 
 # 3. 데이터 시딩 (최초 1회)

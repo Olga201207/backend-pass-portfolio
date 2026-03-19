@@ -5,8 +5,8 @@ import { BASE_URL } from '../config.js';
 
 // Cache Penetration: 존재하지 않는 ID 반복 요청
 // 캐시에도 DB에도 없는 ID → DB까지 전파되는지 확인
-// before: NULL 캐싱 없음 → DB 매번 조회
-// after:  NULL_VALUE 센티넬 캐싱 → 두 번째부터 캐시 히트
+// before: BookRedisService        → null 캐싱 없음 → 매 요청마다 DB 조회
+// after:  ImprovedBookRedisService → NULL_VALUE sentinel (5분 TTL) → 첫 요청 후 캐시 히트
 
 const STRATEGY    = __ENV.STRATEGY    || 'before';
 // 존재하지 않는 ID (Book이 최대 1000개라고 가정, 9999 이상은 DB에 없음)
@@ -34,12 +34,13 @@ export function setup() {
 }
 
 export default function () {
-  const res = http.get(`${BASE_URL}/${BASE_PATH}/books/${NONEXISTENT_ID}`);
+  const res = http.get(`${BASE_URL}/${BASE_PATH}/books/${NONEXISTENT_ID}/penetration`);
 
   // 존재하지 않는 ID → 200 (null body) 또는 404 모두 허용
-  check(res, {
+  const success = check(res, {
     'no server error': (r) => r.status !== 500,
-  }) || errorRate.add(1);
+  });
+  errorRate.add(!success);
 
   sleep(0.1);
 }

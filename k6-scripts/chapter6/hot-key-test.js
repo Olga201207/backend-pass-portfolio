@@ -25,9 +25,10 @@ export const options = {
 export default function () {
   const res = http.get(`${BASE_URL}/${BASE_PATH}/books/${BOOK_ID}`);
 
-  check(res, {
+  const success = check(res, {
     'status 200': (r) => r.status === 200,
-  }) || errorRate.add(1);
+  });
+  errorRate.add(!success);
 
   sleep(0.1);
 }

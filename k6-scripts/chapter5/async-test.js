@@ -28,10 +28,11 @@ export default function () {
     `${BASE_URL}/${BASE_PATH}/movies/${MOVIE_ID}?userId=1`
   );
 
-  check(res, {
+  const success = check(res, {
     'status 200': (r) => r.status === 200,
     'p95 < 1500ms': (r) => r.timings.duration < 1500,
-  }) || errorRate.add(1);
+  });
+  errorRate.add(!success);
 
   sleep(0.5);
 }

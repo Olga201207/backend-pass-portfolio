@@ -35,9 +35,10 @@ export default function () {
   const bookId = Math.floor(Math.random() * TOTAL_BOOKS) + 1;
   const res = http.get(`${BASE_URL}/${BASE_PATH}/books/${bookId}/avalanche`);
 
-  check(res, {
+  const success = check(res, {
     'status 200': (r) => r.status === 200,
-  }) || errorRate.add(1);
+  });
+  errorRate.add(!success);
 
   sleep(0.05);
 }
