@@ -138,11 +138,3 @@ export function setup() {
     'health check passed': (r) => r.status === 200,
   });
 }
-
-// 결과 처리
-export function handleSummary(data) {
-  const timestamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
-  return {
-    [`results/board-load-test-${timestamp}.json`]: JSON.stringify(data),
-  };
-}

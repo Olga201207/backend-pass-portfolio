@@ -1,7 +1,7 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Rate } from 'k6/metrics';
-import { BASE_URL, TEST_EMAIL, TEST_PASSWORD } from '../../config.js';
+import { BASE_URL, TEST_EMAIL, TEST_PASSWORD } from '../config.js';
 
 // 환경변수 STRATEGY: pessimistic | optimistic | named (기본: pessimistic)
 const STRATEGY = __ENV.STRATEGY || 'pessimistic';
@@ -52,11 +52,4 @@ export default function (data) {
   }) || errorRate.add(1);
 
   sleep(0.1);
-}
-
-export function handleSummary(data) {
-  const ts = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
-  return {
-    [`results/concurrency-${STRATEGY}-${ts}.json`]: JSON.stringify(data),
-  };
 }

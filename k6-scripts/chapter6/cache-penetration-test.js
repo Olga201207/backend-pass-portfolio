@@ -1,7 +1,7 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Rate } from 'k6/metrics';
-import { BASE_URL } from '../../config.js';
+import { BASE_URL } from '../config.js';
 
 // Cache Penetration: 존재하지 않는 ID 반복 요청
 // 캐시에도 DB에도 없는 ID → DB까지 전파되는지 확인
@@ -42,11 +42,4 @@ export default function () {
   }) || errorRate.add(1);
 
   sleep(0.1);
-}
-
-export function handleSummary(data) {
-  const ts = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
-  return {
-    [`results/cache-penetration-${STRATEGY}-${ts}.json`]: JSON.stringify(data),
-  };
 }

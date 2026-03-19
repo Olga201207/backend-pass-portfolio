@@ -1,7 +1,7 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Rate } from 'k6/metrics';
-import { BASE_URL } from '../../config.js';
+import { BASE_URL } from '../config.js';
 
 // 환경변수 STRATEGY: sync | async (기본: sync)
 const STRATEGY = __ENV.STRATEGY || 'sync';
@@ -34,11 +34,4 @@ export default function () {
   }) || errorRate.add(1);
 
   sleep(0.5);
-}
-
-export function handleSummary(data) {
-  const ts = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
-  return {
-    [`results/async-${STRATEGY}-${ts}.json`]: JSON.stringify(data),
-  };
 }

@@ -60,8 +60,12 @@ public class EventWithLock {
 
     public void increaseParticipants() {
         if (this.currentParticipants >= this.maxParticipants) {
-            throw new RuntimeException("최대 참가 인원을 초과했습니다.");
+            throw new IllegalStateException("최대 참가 인원을 초과했습니다.");
         }
         this.currentParticipants++;
+    }
+
+    public void reset() {
+        this.currentParticipants = 0;
     }
 } 

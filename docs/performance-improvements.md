@@ -113,7 +113,7 @@ Before/After 비교: 동일 VU 수로 실행 후 Grafana `app.query.per_request`
 
 ### 원인 분석
 
-`BatchContext` 모니터링으로 배치 실행 시간을 측정한 결과, JPA의 `save()` 반복 호출이 각각 독립적인 `PreparedStatement`를 생성하고 실행하며 1,440번의 DB 왕복을 유발하는 것을 확인했다.
+k6로 `POST /api/chapter5/bulk/individual`(1,440회 `save()`)와 `POST /api/chapter5/bulk/batch`(`batchUpdate()`)를 각각 1회 실행하여 응답시간을 직접 비교했다. JPA의 `save()` 반복 호출이 각각 독립적인 `PreparedStatement`를 생성하고 실행하며 1,440번의 DB 왕복을 유발하는 것이 응답시간 차이로 확인됐다.
 
 ```java
 // Before: 1,440번 개별 INSERT
@@ -172,18 +172,28 @@ public void bulkDeleteImproved() {
 | DB 왕복 횟수 | 1,440회 | 1회 (배치 크기 = 전체) |
 | DELETE 방식 | 개별 `delete()` | `deleteAllInBatch()` 단일 쿼리 |
 
+### k6 실측 결과 (EC2 운영 환경, 1 VU / 1 iteration, 1,440건)
+
+| 지표 | Before (`saveAll`) | After (`batchUpdate`) | 개선율 |
+|------|-------------------|----------------------|--------|
+| avg 응답시간 | 1.33s | **77ms** | **94% 감소** |
+| p(95) 응답시간 | 2.47s | **115ms** | **95% 감소** |
+| 전체 실행시간 | 2.7s | **0.2s** | **93% 감소** |
+| 에러율 | 0% | 0% | - |
+
+> 측정 결과 파일: `k6-scripts/chapter5/results/scenario2_bulk-insert-*.json`
+
 ### 측정 방법
 
-**측정 목표**: 배치 실행 시간, DB 커넥션 점유 시간, 메모리 영향
+**측정 목표**: 배치 실행 시간
 
 | 툴 | 사용 방법 | 측정 지표 |
 |----|----------|----------|
-| **Grafana** (Dashboard #19004) | HTTP Request Duration (batch 엔드포인트 필터) | 단건 배치 실행 시간 |
-| **Grafana** (Dashboard #4701) | JVM (Micrometer) → Heap Memory / GC Pause Time | 메모리 사용, GC 영향 |
-| **k6** | 1 VU 단발 실행 (`k6 run --vus 1 --iterations 1`) → `http_req_duration` | 단건 실행 시간 측정 |
-| **CloudWatch** | AWS/RDS → `CPUUtilization`, `DatabaseConnections` 시계열 | INSERT 구간 DB 부하 스파이크 |
+| **k6** | 1 VU / 1 iteration 단발 실행 → `http_req_duration` Before/After 비교 | 단건 실행 시간 |
 
-Before/After 비교: `BatchContext` 로그의 실행 시간 + Grafana HTTP Request Duration 비교
+> **Grafana 미사용 이유**: 1 VU / 1 iteration 테스트는 요청이 2건(DELETE + POST)에 불과해 Prometheus 수집 주기(5s)보다 짧게 종료된다. 시계열 그래프에 데이터가 남지 않으므로 k6 터미널 출력이 유일한 측정 근거다.
+
+Before/After 비교: k6 터미널의 `http_req_duration` avg / p(95) 수치 직접 비교
 
 ### 어필 포인트
 
@@ -617,6 +627,76 @@ DB 호출 2건: 락 경합 과정에서 극히 드물게 발생한 2건으로, �
 | **14091** | HikariCP | active/idle/pending connections, acquisition time |
 | **763** | Redis Dashboard (시나리오 6A/B/C 전용) | memory usage, ops/sec, hit rate, connected clients |
 | **커스텀** | Query Count | `app.query.per_request` p95 (path별) |
+
+### k6 핵심 용어
+
+부하 테스트 결과를 읽을 때 반복적으로 등장하는 용어를 정리한다.
+
+#### 부하 설정
+
+| 용어 | 설명 | 예시 |
+|------|------|------|
+| **VU (Virtual Users)** | 동시에 요청을 보내는 가상 사용자 수. 실제 유저가 브라우저 탭을 열어 반복 요청하는 것을 시뮬레이션한다. VU가 높을수록 서버 동시 처리 압력이 증가한다. | `30 VU` = 30명이 동시에 요청 중 |
+| **Stages (ramp-up/down)** | 부하를 점진적으로 올리고 내리는 단계. 급격한 트래픽 증가로 인한 튀는 오차를 줄이고 실제 트래픽 패턴과 유사하게 만든다. | `30s ramp-up → 2m 유지 → 30s ramp-down` |
+| **Iterations** | VU들이 `default function`을 완료한 총 횟수. `RPS × 측정시간`과 근사하며, 값이 높을수록 더 많은 요청을 처리했음을 의미한다. | `4104 iterations` |
+| **Duration** | 테스트 총 실행 시간 | `3m` |
+
+#### 응답시간 분해
+
+k6의 `http_req_duration`은 아래 세 구간의 합이다.
+
+```
+http_req_duration = http_req_sending + http_req_waiting + http_req_receiving
+```
+
+| 지표 | 의미 | N+1 시나리오에서의 의미 |
+|------|------|----------------------|
+| **http_req_duration** | 클라이언트 관점 전체 응답시간 | 사용자가 체감하는 지연 |
+| **http_req_waiting (TTFB)** | 요청 전송 완료 → 첫 바이트 수신까지. **서버 처리시간** (DB 쿼리 + 비즈니스 로직) | N+1 해결 효과가 가장 명확히 드러나는 지표 |
+| **http_req_receiving** | 응답 바디를 모두 받는 데 걸린 시간. 응답 크기에 비례 | Fetch Join은 JOIN 결과 직렬화로 이 값이 증가 |
+| **http_req_sending** | 요청을 서버로 전송하는 시간. GET이면 사실상 0 | 무시해도 되는 값 |
+| **http_req_blocked** | TCP 새 연결 대기 시간. keep-alive 재사용 시 0 | 간헐적 스파이크만 확인 |
+
+#### 응답시간 통계
+
+| 용어 | 설명 | 해석 가이드 |
+|------|------|------------|
+| **p50 (중앙값, med)** | 전체 요청 중 50%가 이 시간 이하 | 전형적인 응답속도. avg보다 이상치 영향 적음 |
+| **p95** | 전체 요청 중 95%가 이 시간 이하 | 포트폴리오의 **핵심 SLO 지표**. "느린 사용자 경험" 대표값 |
+| **p99** | 전체 요청 중 99%가 이 시간 이하 | 최악의 케이스. p95보다 더 보수적 |
+| **avg (평균)** | 전체 응답시간 평균 | 이상치(outlier)에 민감 — p95와 함께 봐야 함 |
+| **max** | 측정 중 가장 느린 응답 | 단발성 이상치일 수 있어 단독 판단 지양 |
+
+> **왜 p95를 쓰는가?** avg는 극단적으로 느린 요청 1건이 전체 평균을 왜곡할 수 있다. p95는 "상위 5% 최악 케이스를 제외한 사용자 경험"을 나타내어 SLO/SLA 지표로 산업 표준처럼 쓰인다.
+
+#### 처리량
+
+| 용어 | 설명 |
+|------|------|
+| **RPS (Requests Per Second)** | 초당 처리한 요청 수. `iterations / 측정시간(초)`로 계산. VU가 동일할 때 RPS가 높을수록 서버 처리 효율이 좋다는 의미 |
+| **Throughput** | RPS와 동의어로 혼용. Grafana에서는 `rate(http_requests_total[1m])`으로 확인 |
+
+#### 검증 및 임계값
+
+| 용어 | 설명 |
+|------|------|
+| **Checks** | 응답 검증 (예: `status === 200`). `passes/fails`로 집계. checks 실패 = 비즈니스 오류 |
+| **http_req_failed** | HTTP 레벨 실패율 (4xx/5xx). `value: 0` = 실패 없음 |
+| **Thresholds** | 테스트 통과/실패 기준. `false` = **위반 없음 = 통과(✅)**, `true` = **위반 = 실패(❌)** |
+| **errors (커스텀)** | k6 스크립트에서 직접 집계하는 비즈니스 에러율. HTTP 200이어도 응답 내용이 잘못되면 증가 |
+
+> **Thresholds 해석 주의**: k6 JSON 결과에서 `"p(95)<2000": false`는 **"임계값 위반이 false" = 통과**를 의미한다. 직관과 반대이므로 주의.
+
+#### iteration_duration vs http_req_duration
+
+```
+iteration_duration = http_req_duration + sleep(ms)
+```
+
+k6 스크립트에 `sleep(1)`이 있으면 `iteration_duration ≈ http_req_duration + 1000ms`가 된다.
+응답시간을 볼 때는 반드시 `http_req_duration`을 기준으로 삼아야 한다.
+
+---
 
 ### k6 스크립트 매핑
 

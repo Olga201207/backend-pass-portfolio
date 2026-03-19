@@ -13,4 +13,6 @@ public interface EventWithLockParticipantRepository extends JpaRepository<EventW
     List<EventWithLockParticipant> findByExternalIdIsNullAndCreatedAtBefore(
             LocalDateTime dateTime
     );
+
+    void deleteByEvent(ding.co.backendportfolio.chapter4._3_event_with_lock.entity.EventWithLock event);
 } 

@@ -1,7 +1,7 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Rate } from 'k6/metrics';
-import { BASE_URL } from '../../config.js';
+import { BASE_URL } from '../config.js';
 
 // 환경변수 STRATEGY: lazy | fetch-join | batch-size | entity-graph (기본: lazy)
 const STRATEGY = __ENV.STRATEGY || 'lazy';
@@ -37,11 +37,4 @@ export default function () {
   }) || errorRate.add(1);
 
   sleep(1);
-}
-
-export function handleSummary(data) {
-  const ts = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
-  return {
-    [`results/n-plus-one-${STRATEGY}-${ts}.json`]: JSON.stringify(data),
-  };
 }

@@ -1,7 +1,7 @@
 import http from 'k6/http';
 import { check } from 'k6';
 import { Rate } from 'k6/metrics';
-import { BASE_URL } from '../../config.js';
+import { BASE_URL } from '../config.js';
 
 // 환경변수 STRATEGY: individual | batch (기본: individual)
 const STRATEGY = __ENV.STRATEGY || 'individual';
@@ -34,11 +34,4 @@ export default function () {
   check(insertRes, {
     'insert status 200': (r) => r.status === 200,
   }) || errorRate.add(1);
-}
-
-export function handleSummary(data) {
-  const ts = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
-  return {
-    [`results/bulk-insert-${STRATEGY}-${ts}.json`]: JSON.stringify(data),
-  };
 }

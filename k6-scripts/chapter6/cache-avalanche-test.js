@@ -1,7 +1,7 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Rate } from 'k6/metrics';
-import { BASE_URL } from '../../config.js';
+import { BASE_URL } from '../config.js';
 
 // 환경변수 STRATEGY: before | after (기본: before)
 // before: /api/chapter6/books/{id}/avalanche         (고정 TTL)
@@ -40,11 +40,4 @@ export default function () {
   }) || errorRate.add(1);
 
   sleep(0.05);
-}
-
-export function handleSummary(data) {
-  const ts = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
-  return {
-    [`results/cache-avalanche-${STRATEGY}-${ts}.json`]: JSON.stringify(data),
-  };
 }

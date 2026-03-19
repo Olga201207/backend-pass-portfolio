@@ -31,11 +31,3 @@ export default function () {
 
   sleep(1);
 }
-
-// 결과 처리
-export function handleSummary(data) {
-  const timestamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
-  return {
-    [`results/memory-test-${timestamp}.json`]: JSON.stringify(data),
-  };
-}

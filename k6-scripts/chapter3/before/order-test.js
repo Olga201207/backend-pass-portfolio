@@ -71,11 +71,3 @@ export default function () {
   }) || errorRate.add(1);
   sleep(1);
 }
-
-// 결과 처리
-export function handleSummary(data) {
-  const timestamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
-  return {
-    [`results/order-before-${timestamp}.json`]: JSON.stringify(data),
-  };
-}
