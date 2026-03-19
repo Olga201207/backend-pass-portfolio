@@ -24,7 +24,7 @@ export const options = {
 let token = null;
 
 export function setup() {
-  const loginRes = http.post(`${BASE_URL}/members/login`, JSON.stringify({
+  const loginRes = http.post(`${BASE_URL}/chapter2/members/login`, JSON.stringify({
     email: TEST_EMAIL,
     password: TEST_PASSWORD,
   }), { headers: { 'Content-Type': 'application/json' } });
@@ -47,9 +47,10 @@ export default function (data) {
     { headers }
   );
 
-  check(res, {
+  const success = check(res, {
     'join status 200 or 400': (r) => r.status === 200 || r.status === 400,
-  }) || errorRate.add(1);
+  });
+  errorRate.add(!success);
 
   sleep(0.1);
 }

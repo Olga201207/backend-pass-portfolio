@@ -40,6 +40,9 @@ public class NamedLockEventFacade {
                 log.info("이벤트 참가 성공 - eventId: {}, memberId: {}, 총 시도횟수: {}",
                         eventId, memberId, retryCount + 1);
                 return;
+            } catch (IllegalStateException e) {
+                // 정원 초과는 재시도해도 의미 없음 → 즉시 실패
+                throw e;
             } catch (Exception e) {
                 // 수행 중 에러 발생시, 재시도 횟수 증가시키고, 해당 스레드를 잠재운 뒤 재실행
                 retryCount++;
