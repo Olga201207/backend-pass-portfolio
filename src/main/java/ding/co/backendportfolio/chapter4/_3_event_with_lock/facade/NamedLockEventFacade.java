@@ -20,7 +20,6 @@ public class NamedLockEventFacade {
     // 낙관적 락과 비슷한 방식으로 재시도가 들어가야 하는 로직임
     // 즉, version 등의 인수가 db의 record의 것과 다른 경우 재시도하는 로직이 필요하다는 의미
     // 네임드 락 자체도, 어떤 transaction이 락을 선점하면, 다른 transaction은 그 락을 잡기 위해서 대기해야 한다는 의미
-    @Transactional
     public void joinEvent(Long eventId, Long memberId) throws InterruptedException {
         int retryCount = 0;
         String lockName = String.format("event_%d", eventId);

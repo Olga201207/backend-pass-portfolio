@@ -4,6 +4,7 @@ import ding.co.backendportfolio.chapter2.service.MemberService;
 import ding.co.backendportfolio.chapter4._3_event_with_lock.entity.EventWithLock;
 import ding.co.backendportfolio.chapter4._3_event_with_lock.facade.NamedLockEventFacade;
 import ding.co.backendportfolio.chapter4._3_event_with_lock.facade.OptimisticLockEventFacade;
+import ding.co.backendportfolio.chapter4._3_event_with_lock.facade.RedisNamedLockEventFacade;
 import ding.co.backendportfolio.chapter4._3_event_with_lock.repository.EventWithLockRepository;
 import ding.co.backendportfolio.chapter4._3_event_with_lock.service.EventWithLockService;
 import ding.co.backendportfolio.chapter4._4_event_with_external.repository.EventWithLockParticipantRepository;
@@ -25,6 +26,7 @@ public class EventController {
     private final EventWithLockService eventWithLockService;
     private final NamedLockEventFacade namedLockEventFacade;
     private final OptimisticLockEventFacade optimisticLockEventFacade;
+    private final RedisNamedLockEventFacade redisNamedLockEventFacade;
     private final MemberService memberService;
     private final EventWithLockRepository eventWithLockRepository;
     private final EventWithLockParticipantRepository participantRepository;
@@ -78,6 +80,15 @@ public class EventController {
             @AuthenticationPrincipal User user) throws InterruptedException {
         Long memberId = memberService.getCurrentMember(user.getUsername()).getId();
         namedLockEventFacade.joinEvent(eventId, memberId);
+        return ResponseEntity.ok().build();
+    }
+
+    @PostMapping("/{eventId}/join/redis-named")
+    public ResponseEntity<Void> joinEventRedisNamed(
+            @PathVariable Long eventId,
+            @AuthenticationPrincipal User user) throws InterruptedException {
+        Long memberId = memberService.getCurrentMember(user.getUsername()).getId();
+        redisNamedLockEventFacade.joinEvent(eventId, memberId);
         return ResponseEntity.ok().build();
     }
 } 
