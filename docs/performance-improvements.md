@@ -463,8 +463,8 @@ public Page<OrderStatisticsResponse> getOrderStatistics(Long minAmount, Pageable
 |------|------------------------|------------------------|--------|
 | avg 응답시간 | 32,836ms | **42ms** | **99.9% 감소** |
 | p(95) 응답시간 | 60,000ms (timeout) | **99ms** | **99.8% 감소** |
-| 에러율 | 100% | 0% | - |
-| RPS | 2.0/s | **65.8/s** | **33배 향상** |
+| 에러율 | 100% (전 요청 타임아웃) | **0%** | 완전 정상화 |
+| RPS | 2.0/s (타임아웃 병목) | **65.8/s** | - |
 
 > 측정 결과 파일: `k6-scripts/chapter3/results/scenario4_stats-*.json`
 
