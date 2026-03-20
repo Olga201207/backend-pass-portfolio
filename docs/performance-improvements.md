@@ -14,12 +14,12 @@
 |---|---------|--------|-------|--------|
 | 1 | N+1 쿼리 (5개 호텔) | 6 queries | 1 query | 83% 감소 |
 | 2 | Bulk Insert (1440건) | 1,440회 개별 INSERT | 배치 단위 처리 | DB 왕복 대폭 감소 |
-| 3 | 동시성 제어 (100 concurrent) | Race Condition 발생 | 정원 초과 0건 | - |
+| 3 | 동시성 제어 (100 VU / 50s) | Race Condition 발생 | 4개 전략 모두 join_success=30, 에러 0% | 비관적 p95 311ms / Redis Named p95 1,640ms |
 | 4 | 통계 쿼리 (매 요청 집계) | 전체 집계 on-demand | 사전 집계 테이블 조회 | p95 목표 300ms |
 | 5 | 비동기 처리 (외부 API 4개) | avg 838ms / p95 927ms | avg 504ms / p95 606ms | 40% 감소 |
-| 6A | Cache Penetration (100 VU) | avg 80ms / p95 125ms (매 요청 DB 조회) | avg 17ms / p95 32ms (sentinel 캐시 히트) | 응답시간 79% 감소 |
-| 6B | Cache Avalanche (300 VU) | avg 180ms / p95 420ms / DB calls CV 0.81 | avg 131ms / p95 323ms / CV 0.36 | p95 23% 감소, 변동성 56% 감소 |
-| 6C | Hot Key (300 VU, 동일 ID) | avg 81ms / errors 0% / DB 300 calls | avg 394ms / p95 942ms / errors 0% / DB 2 calls | DB 호출 99.3% 감소, 에러 0% |
+| 6A | Cache Penetration (100 VU) | avg 49ms / p95 88ms (매 요청 DB 조회) | avg 17ms / p95 30ms (sentinel 캐시 히트) | 응답시간 65% 감소, DB 호출 99%+ 감소 |
+| 6B | Cache Avalanche (300 VU) | avg 182ms / p95 492ms | avg 129ms / p95 308ms | p95 37% 감소, DB 스파이크 완화 |
+| 6C | Hot Key (300 VU, 동일 ID) | avg 89ms / errors 0% / DB 300 calls | avg 90ms / errors 0% / DB 2 calls | DB 호출 99.3% 감소 (응답시간은 캐시 히트 비율로 유사) |
 
 ---
 
@@ -323,25 +323,25 @@ public void joinEvent(Long eventId, Long memberId) throws InterruptedException {
 | 락 없음 (before) | 정원 초과 발생 | Race Condition |
 | 비관적 락 | 정원 초과 0건 | 즉시 DB 잠금, 데드락 주의 |
 | 낙관적 락 | 정원 초과 0건 | 재시도 로직 필요, 저충돌 최적 |
-| MySQL Named Lock | 정원 초과 0건 (단, 에러율 84.77%) | DB 커넥션 풀 고갈로 사실상 실패 |
+| MySQL Named Lock | 정원 초과 0건 | DB 커넥션 유지 필요, 단일 인스턴스 적합 |
 | Redis Named Lock | 정원 초과 0건 | 분산 환경 적합, DB 커넥션 무관 |
 
-### k6 실측 결과 (EC2 운영 환경, 100 VU / 50s)
+### k6 실측 결과 (EC2 운영 환경, 100 VU / 50s, `scenario3-concurrency.js`)
 
-| 전략 | avg | p(95) | RPS | 에러율 | threshold |
-|------|-----|-------|-----|--------|-----------|
-| 비관적 락 | 206ms | 360ms | 240/s | 0% | ✅ |
-| 낙관적 락 | 134ms | 255ms | 296/s | 0% | ✅ |
-| MySQL Named Lock | 30,450ms | 60,000ms (timeout) | 2.8/s | **84.77%** | ❌ |
-| Redis Named Lock | 772ms | 2,239ms | 90/s | 0% | ✅ |
+| 전략 | join_success | avg | p(95) | RPS | 에러율(5xx) | threshold |
+|------|-------------|-----|-------|-----|------------|-----------|
+| 비관적 락 | **30** ✅ | 165ms | 311ms | 288.7/s | 0% | ✅ |
+| 낙관적 락 | **30** ✅ | 199ms | 384ms | 275.8/s | 0% | ✅ |
+| MySQL Named Lock | **30** ✅ | 515ms | 872ms | 129.7/s | 0% | ✅ |
+| Redis Named Lock | **30** ✅ | 600ms | 1,640ms | 114.1/s | 0% | ✅ |
 
-> `http_req_failed` 수치가 99%로 높게 보이는 것은 k6가 기본적으로 4xx 응답을 HTTP 실패로 집계하기 때문이다. 정원 초과 시 반환하는 400 응답이 대부분을 차지하며, 이는 의도된 동작이다. 비즈니스 로직 기준 에러율(`errors` 커스텀 메트릭)은 모두 0%다. (MySQL Named Lock은 커넥션 풀 고갈로 인한 500 에러가 원인)
+> `http_req_failed` 수치가 99%로 높게 보이는 것은 k6가 기본적으로 4xx 응답을 HTTP 실패로 집계하기 때문이다. 정원 초과 시 반환하는 400 응답이 대부분을 차지하며, 이는 의도된 동작이다. 비즈니스 로직 기준 에러율(`errors` 커스텀 메트릭)은 모두 0%이며, **4개 전략 모두 join_success = 정확히 30 — Race Condition 없이 정원 초과 0건을 증명**했다.
 
 **전략별 특성 분석**
-- **낙관적 락**: 충돌 시 즉시 실패(정원 초과 `IllegalStateException` throw)하므로 응답시간이 가장 짧음. 대기 없이 빠르게 결과 반환.
-- **비관적 락**: DB X-lock으로 순차 처리. 대기가 발생하지만 안정적.
-- **MySQL Named Lock**: `@Transactional` + 재시도 루프로 커넥션 점유 시간이 길어 100 VU에서 커넥션 풀 고갈 → 실용적이지 않음.
-- **Redis Named Lock**: 락 획득 재시도(최대 100회 × 50ms) 오버헤드로 응답시간이 높음. 단, DB 커넥션 풀과 무관하게 동작하는 분산 환경 장점이 있음.
+- **비관적 락**: DB X-lock(`SELECT FOR UPDATE`)으로 순차 처리. 100 VU 중 정원 30명 이후 요청은 즉시 거절 → RPS 288.7로 가장 높은 처리량. 단, 멀티 인스턴스 환경에서도 DB 단에서 직렬화되므로 분산 환경에도 적합.
+- **낙관적 락**: `@Version` 체크로 충돌 감지, 실패 시 재시도. 정원이 이미 차면 재시도 없이 즉시 400 반환 → avg 199ms로 빠름. 충돌 빈도가 낮은 환경(저경합)에 최적.
+- **MySQL Named Lock**: Advisory Lock으로 직렬화. 커넥션을 락 보유 시간 동안 점유하므로 높은 동시성에서 커넥션 대기 발생 → avg 515ms, RPS 129.7/s. 단일 인스턴스·중간 트래픽 환경에서 사용.
+- **Redis Named Lock**: Redis `SET NX`로 분산 락 구현. 락 획득 재시도(최대 40회 × 5~20ms) 오버헤드로 p95 1,640ms. DB 커넥션 풀과 완전히 독립적으로 동작 → **다중 인스턴스·MSA 환경에서 유일한 선택지**.
 
 ### Grafana 모니터링 관측 (시나리오 3)
 
@@ -361,23 +361,32 @@ k6 실행 중 Grafana 대시보드(#4701 JVM, #19004 Spring Boot Observability)�
 
 ```powershell
 cd k6-scripts/chapter4
-$env:BASE_URL="http://<EC2_IP>:8080/api"; $env:EVENT_ID="1"
+$env:BASE_URL="http://<EC2_IP>:8080/api"
 $env:TEST_EMAIL="k6test@test.com"; $env:TEST_PASSWORD="password123"
 
-# 비관적 락
-curl -X POST "http://<EC2_IP>:8080/api/chapter4/events/1/reset"
-$env:STRATEGY="pessimistic"
-k6 run concurrency-test.js --summary-export "results/scenario3_concurrency-pessimistic.json"
+# 이벤트 생성 (최초 1회)
+$res = Invoke-RestMethod -Method POST "$env:BASE_URL/chapter4/events/setup?maxParticipants=30"
+$env:EVENT_ID = $res.eventId
 
-# Redis Named Lock
-curl -X POST "http://<EC2_IP>:8080/api/chapter4/events/1/reset"
-$env:STRATEGY="redis-named"
-k6 run concurrency-test.js --summary-export "results/scenario3_concurrency-redis-named.json"
+# 비관적 락
+$env:STRATEGY="pessimistic"
+Invoke-RestMethod -Method POST "$env:BASE_URL/chapter4/events/$env:EVENT_ID/reset"
+k6 run scenario3-concurrency.js --summary-export "results/scenario3_pessimistic.json"
 
 # 낙관적 락
-curl -X POST "http://<EC2_IP>:8080/api/chapter4/events/1/reset"
 $env:STRATEGY="optimistic"
-k6 run concurrency-test.js --summary-export "results/scenario3_concurrency-optimistic.json"
+Invoke-RestMethod -Method POST "$env:BASE_URL/chapter4/events/$env:EVENT_ID/reset"
+k6 run scenario3-concurrency.js --summary-export "results/scenario3_optimistic.json"
+
+# MySQL Named Lock
+$env:STRATEGY="named"
+Invoke-RestMethod -Method POST "$env:BASE_URL/chapter4/events/$env:EVENT_ID/reset"
+k6 run scenario3-concurrency.js --summary-export "results/scenario3_named.json"
+
+# Redis Named Lock
+$env:STRATEGY="redis-named"
+Invoke-RestMethod -Method POST "$env:BASE_URL/chapter4/events/$env:EVENT_ID/reset"
+k6 run scenario3-concurrency.js --summary-export "results/scenario3_redis-named.json"
 ```
 
 ### 측정 방법
@@ -703,12 +712,12 @@ k6 run cache-penetration-test.js --summary-export "results/scenario6a_penetratio
 
 | 지표 | Before (`BookRedisService`) | After (`ImprovedBookRedisService`) | 개선율 |
 |------|-----------------------------|------------------------------------|--------|
-| avg 응답시간 | 80ms | **17ms** | **79% 감소** |
-| p(95) 응답시간 | 125ms | **32ms** | **74% 감소** |
+| avg 응답시간 | 49ms | **17ms** | **65% 감소** |
+| p(95) 응답시간 | 88ms | **30ms** | **66% 감소** |
 | 에러율 | 0% | 0% | - |
 | threshold | ✅ | ✅ | - |
 
-핵심 차이는 응답시간이 아니라 **DB 호출 패턴**이다. Before는 100 VU × 80초 = 약 5,000회 이상 모두 DB까지 전파됐고, After는 첫 요청 1회만 DB 조회 후 5분간 캐시 히트. 응답시간 79% 감소는 DB 왕복 제거에서 비롯된다.
+핵심 차이는 응답시간이 아니라 **DB 호출 패턴**이다. Before는 100 VU × 80초 = 약 5,000회 이상 모두 DB까지 전파됐고, After는 첫 요청 1회만 DB 조회 후 5분간 캐시 히트. Grafana `db_select_total{service="BookRedisService"}` vs `{service="ImprovedBookRedisService"}` 카운터 비교가 핵심 증거다.
 
 > 측정 결과 파일: `k6-scripts/chapter6/results/scenario6a_penetration-*.json`
 
@@ -736,7 +745,7 @@ k6 run cache-penetration-test.js --summary-export "results/scenario6a_penetratio
 
 #### 원인 분석
 
-테스트에서 1,000개의 Book 캐시를 동일 TTL로 설정 후 만료 직후 동시 요청을 발생시키자, DB 쿼리가 특정 시간에 집중되었다. 변동계수(CV)로 쿼리 부하의 시간적 분산을 측정했다.
+테스트에서 1,000개의 Book 캐시를 동일 TTL로 설정 후 만료 직후 동시 요청을 발생시키자, DB 쿼리가 특정 시간에 집중되었다. Grafana `db_select_total` 카운터로 특정 구간에 DB 호출이 폭발적으로 증가하는 패턴을 관측했다.
 
 #### 해결 방법
 
@@ -755,10 +764,10 @@ redisTemplate.opsForValue().set(id.toString(), serialized, ttl, TimeUnit.MILLISE
 
 | 지표 | Before (고정 TTL) | After (Jitter 적용) | 개선율 |
 |------|-----------------|-------------------|--------|
-| 총 DB 쿼리 수 | 31,145 | 24,263 | **22% 감소** |
-| 변동계수 (CV) | 0.81 | 0.36 | **56% 감소** |
+| avg 응답시간 | 182ms | **129ms** | **29% 감소** |
+| p(95) 응답시간 | 492ms | **308ms** | **37% 감소** |
 
-CV(변동계수) 0.81 → 0.36: DB 쿼리 부하의 시간적 편차가 절반 이하로 감소, 트래픽이 고르게 분산됨을 수치로 증명했다.
+고정 TTL에서는 1,000개 캐시가 동시에 만료되며 DB 호출이 특정 구간에 집중된다. Jitter 적용 후 만료 시점이 분산되어 동시 DB 요청 수가 줄고 응답시간이 개선됐다.
 
 #### 측정 방법
 
@@ -771,7 +780,7 @@ CV(변동계수) 0.81 → 0.36: DB 쿼리 부하의 시간적 편차가 절반 �
 | **Grafana** (Dashboard #763) | Redis Dashboard → Connected Clients, Ops/sec | Redis 부하 분포 |
 | **CloudWatch** | AWS/RDS → `CPUUtilization` — TTL 만료 시점 CPU 스파이크 비교 | DB CPU 스파이크 |
 
-CV(변동계수) = stddev(DB calls per second) / mean 으로 부하 평탄화 정도 정량화
+Grafana `increase(db_select_total[2m])` 패널로 Before(고정 TTL) vs After(Jitter) 구간의 DB 호출 패턴을 시각적으로 비교
 
 #### k6 실행 명령어
 
@@ -790,7 +799,7 @@ $env:STRATEGY="after"
 k6 run cache-avalanche-test.js --summary-export "results/scenario6b_avalanche-after.json"
 ```
 
-> `DbCallChecker`가 초당 DB 호출 수를 기록하고 CV(변동계수)를 계산해 출력한다. Grafana `db_select_total` 시계열로 Before의 급격한 스파이크 vs After의 평탄한 분포를 시각화한다.
+> Grafana `increase(db_select_total{service="CacheAvalancheService"}[2m])` vs `increase(...ImprovedCacheAvalancheService...)[2m])` 패널로 Before/After DB 호출 패턴을 비교한다.
 
 #### 측정 방법
 
@@ -799,7 +808,7 @@ k6 run cache-avalanche-test.js --summary-export "results/scenario6b_avalanche-af
 | 툴 | 사용 방법 | 측정 지표 |
 |----|----------|----------|
 | **k6** | 캐시 클리어 후 300 VU → 1,000개 Book에 분산 요청, 40초 | 응답시간, 에러율 |
-| **Grafana** (커스텀 패널) | `rate(db_select_total[5s])` 시계열 — Before vs After | DB 쿼리 스파이크 패턴, CV |
+| **Grafana** (커스텀 패널) | `increase(db_select_total{service="CacheAvalancheService"}[2m])` vs `ImprovedCacheAvalancheService` | DB 호출 수 Before/After 비교 |
 | **Grafana** (Dashboard #763) | Redis Dashboard → Connected Clients, Ops/sec | Redis 부하 분포 |
 | **CloudWatch** | AWS/RDS → `CPUUtilization` — TTL 만료 시점 CPU 스파이크 비교 | DB CPU 스파이크 |
 
@@ -807,19 +816,17 @@ k6 run cache-avalanche-test.js --summary-export "results/scenario6b_avalanche-af
 
 | 지표 | Before (고정 TTL=1,000ms) | After (TTL + Jitter 0~500ms) | 개선율 |
 |------|--------------------------|------------------------------|--------|
-| avg 응답시간 | 180ms | **131ms** | **27% 감소** |
-| p(95) 응답시간 | 420ms | **323ms** | **23% 감소** |
-| 총 DB 쿼리 수 | 31,145 | 24,263 | **22% 감소** |
-| 변동계수 (CV) | 0.81 | **0.36** | **56% 감소** |
+| avg 응답시간 | 182ms | **129ms** | **29% 감소** |
+| p(95) 응답시간 | 492ms | **308ms** | **37% 감소** |
 | 에러율 | 0% | 0% | - |
 
-DB 쿼리 총량 감소보다 **CV 0.81 → 0.36** 변화가 핵심이다. 고정 TTL에서는 특정 10초 구간에 DB 호출이 집중(최대 초당 수백 건 스파이크)되는 반면, Jitter 적용 후 만료 시점이 분산되어 스파이크 높이가 절반 이하로 내려갔다.
+고정 TTL(1,000ms)에서는 1,000개 캐시가 동시 만료되며 특정 시점에 DB 호출이 집중된다. Jitter 적용(1,000~1,500ms) 후 만료 시점이 분산되어 동시 DB 요청이 줄고 응답시간 및 p95가 개선됐다. Grafana `db_select_total` 패널에서 Before의 급격한 spike vs After의 완만한 분포를 시각적으로 확인할 수 있다.
 
 > 측정 결과 파일: `k6-scripts/chapter6/results/scenario6b_avalanche-*.json`
 
 #### 어필 포인트
 
-`ThreadLocalRandom`으로 멀티스레드 환경에서 안전하게 지터를 생성하고, CV 지표를 통해 단순 쿼리 수 감소뿐만 아니라 부하 평탄화 효과를 정량화했다.
+`ThreadLocalRandom`으로 멀티스레드 환경에서 안전하게 지터를 생성하고, Grafana `db_select_total` 패널로 캐시 만료 집중 현상이 완화되는 것을 시각적으로 증명했다. p95 37% 감소(492ms → 308ms)가 수치 근거다.
 
 ---
 
@@ -885,10 +892,9 @@ public Book findBookByIdWithLock(Long id) throws JsonProcessingException {
 
 | 지표 | Before (락 없음) | After (분산 락 적용) | 개선율 |
 |------|---------------|-------------------|--------|
-| DB 호출 수 (300 concurrent) | 300 | **2** | **99.3% 감소** |
-| 변동계수 (CV) | 0.51 | **0.00** | 완전 평탄화 |
+| DB 호출 수 (300 concurrent) | ~300 | **2** | **99.3% 감소** |
 
-DB 호출 2건: 락 경합 과정에서 극히 드물게 발생한 2건으로, 이론적으로 1건이 목표.
+DB 호출 2건: 분산 락으로 1개 스레드만 DB 조회하고 캐시를 채운 후 나머지는 캐시 히트. 이론적으로 1건이 목표이나 락 경합 타이밍에 따라 극히 드물게 2건 발생.
 
 #### k6 실행 명령어
 
@@ -923,15 +929,15 @@ k6 run hot-key-test.js --summary-export "results/scenario6c_hotkey-after.json"
 
 #### k6 실측 결과 (EC2 운영 환경, 300 VU / 30초)
 
-| 지표 | Before (락 없음) | After (분산 락 적용) | 개선율 |
-|------|----------------|-------------------|--------|
-| avg 응답시간 | 81ms | **394ms** | 락 재시도 오버헤드 |
-| p(95) 응답시간 | 158ms | **942ms** | - |
+| 지표 | Before (락 없음) | After (분산 락 적용) | 비고 |
+|------|----------------|-------------------|------|
+| avg 응답시간 | 89ms | **90ms** | 거의 동일 |
+| p(95) 응답시간 | 174ms | **209ms** | 거의 동일 |
 | 에러율 | 0% | **0%** | - |
-| DB 호출 수 (초기 burst) | ~300 | **2** | **99.3% 감소** |
+| DB 호출 수 (초기 burst) | ~300 | **2** | **99.3% 감소** ✅ |
 | threshold (errors<5%) | ✅ | ✅ | - |
 
-응답시간이 늘어난 이유: 300 VU 중 락을 획득하지 못한 VU는 5~20ms 간격으로 재시도하면서 대기하기 때문. DB 호출을 1~2건으로 막는 대신 지불하는 비용이다.
+**응답시간이 거의 같은 이유**: TTL 500ms 안에서 대부분의 요청은 캐시 히트라 두 전략 모두 비슷한 평균 응답시간을 보인다. 핵심 차이는 **Grafana `db_select_total` DB 호출 수** — Before는 300 VU가 동시에 DB를 조회하고, After는 1~2건만 DB에 도달한다. k6 응답시간보다 Grafana 카운터 패널이 이 시나리오의 핵심 증거다.
 
 > 측정 결과 파일: `k6-scripts/chapter6/results/scenario6c_hotkey-*.json`
 
