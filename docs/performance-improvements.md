@@ -361,7 +361,7 @@ k6 실행 중 Grafana 대시보드(#4701 JVM, #19004 Spring Boot Observability)�
 
 ```powershell
 cd k6-scripts/chapter4
-$env:BASE_URL="http://<EC2_IP>:8080/api"
+$env:BASE_URL="http://<YOUR_EC2_IP>:8080/api"
 $env:TEST_EMAIL="k6test@test.com"; $env:TEST_PASSWORD="password123"
 
 # 이벤트 생성 (최초 1회)
@@ -472,7 +472,7 @@ public Page<OrderStatisticsResponse> getOrderStatistics(Long minAmount, Pageable
 
 ```powershell
 cd k6-scripts/chapter3
-$env:BASE_URL="http://<EC2_IP>:8080/api"
+$env:BASE_URL="http://<YOUR_EC2_IP>:8080/api"
 
 # Before (on-demand 집계)
 $env:STRATEGY="before"
@@ -605,11 +605,11 @@ CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
 
 ```powershell
 cd k6-scripts/chapter5
-$env:BASE_URL="http://<EC2_IP>:8080/api"
+$env:BASE_URL="http://<YOUR_EC2_IP>:8080/api"
 $env:MOVIE_ID="1"
 
 # 영화 데이터 시딩 (최초 1회)
-curl -X POST "http://<EC2_IP>:8080/api/chapter5/movies/setup?count=100"
+curl -X POST "http://<YOUR_EC2_IP>:8080/api/chapter5/movies/setup?count=100"
 
 # Before (순차 동기)
 $env:STRATEGY="sync"
@@ -690,10 +690,10 @@ if (bookFromDb == null) {
 
 ```powershell
 cd k6-scripts/chapter6
-$env:BASE_URL="http://<EC2_IP>:8080/api"
+$env:BASE_URL="http://<YOUR_EC2_IP>:8080/api"
 
 # 데이터 시딩 (최초 1회 — 6A/B/C 공통)
-curl -X POST "http://<EC2_IP>:8080/api/chapter6/books/setup?count=1000"
+curl -X POST "http://<YOUR_EC2_IP>:8080/api/chapter6/books/setup?count=1000"
 
 # Before (BookRedisService: null 캐싱 없음 → 매 요청마다 DB 조회)
 # 엔드포인트: GET /api/chapter6/books/{id}/penetration
@@ -786,7 +786,7 @@ Grafana `increase(db_select_total[2m])` 패널로 Before(고정 TTL) vs After(Ji
 
 ```powershell
 cd k6-scripts/chapter6
-$env:BASE_URL="http://<EC2_IP>:8080/api"
+$env:BASE_URL="http://<YOUR_EC2_IP>:8080/api"
 # (데이터 시딩은 6A에서 이미 완료)
 
 # Before (고정 TTL=1,000ms → 동시 만료 → DB 쏠림)
@@ -900,16 +900,16 @@ DB 호출 2건: 분산 락으로 1개 스레드만 DB 조회하고 캐시를 채
 
 ```powershell
 cd k6-scripts/chapter6
-$env:BASE_URL="http://<EC2_IP>:8080/api"
+$env:BASE_URL="http://<YOUR_EC2_IP>:8080/api"
 # (데이터 시딩은 6A에서 이미 완료)
 
 # Before: 캐시 클리어 후 동일 ID(1번 Book)에 300 VU 집중 → 캐시 미스 → DB 300건 동시 조회
-curl -X DELETE "http://<EC2_IP>:8080/api/chapter6/books/cache"
+curl -X DELETE "http://<YOUR_EC2_IP>:8080/api/chapter6/books/cache"
 $env:STRATEGY="before"; $env:BOOK_ID="1"
 k6 run hot-key-test.js --summary-export "results/scenario6c_hotkey-before.json"
 
 # After: 캐시 클리어 후 동일 ID에 300 VU 집중 → 분산 락으로 DB 1~2건만 조회
-curl -X DELETE "http://<EC2_IP>:8080/api/chapter6/books/cache"
+curl -X DELETE "http://<YOUR_EC2_IP>:8080/api/chapter6/books/cache"
 $env:STRATEGY="after"; $env:BOOK_ID="1"
 k6 run hot-key-test.js --summary-export "results/scenario6c_hotkey-after.json"
 ```

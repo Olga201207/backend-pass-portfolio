@@ -3,7 +3,7 @@
 # 옵션: .\run-all.ps1 -BaseUrl "http://your-ec2-ip:8080/api"
 
 param(
-    [string]$BaseUrl = "http://<EC2_IP>:8080/api"
+    [string]$BaseUrl = "http://<YOUR_EC2_IP>:8080/api"
 )
 
 $ErrorActionPreference = "Stop"

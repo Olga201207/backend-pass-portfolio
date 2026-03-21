@@ -15,7 +15,7 @@
  *   redis-named  → Redis setIfAbsent 분산 락
  *
  * [실행 방법]
- *   $env:BASE_URL="http://<EC2_IP>:8080/api"
+ *   $env:BASE_URL="http://<YOUR_EC2_IP>:8080/api"
  *   $env:TEST_EMAIL="k6test@test.com"; $env:TEST_PASSWORD="password123"
  *
  *   # 이벤트 생성 (최초 1회)

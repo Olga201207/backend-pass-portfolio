@@ -59,6 +59,7 @@ jobs:
           --arg image     "$IMAGE" \
           --arg rds_host  "${{ secrets.RDS_ENDPOINT }}" \
           --arg rds_pass  "${{ secrets.RDS_PASSWORD }}" \
+          --arg jwt_secret "${{ secrets.JWT_SECRET }}" \
           '{commands: [
             "mkdir -p /home/ubuntu/monitoring",
             ("echo " + $compose + " | base64 -d > /home/ubuntu/monitoring/docker-compose.monitoring.yml"),
@@ -68,7 +69,7 @@ jobs:
             "cd /home/ubuntu/monitoring && docker compose -f docker-compose.monitoring.yml up -d",
             "docker stop portfolio-app || true",
             "docker rm portfolio-app || true",
-            ("docker run -d --name portfolio-app --network monitoring -p 8080:8080 -e SPRING_PROFILES_ACTIVE=prod -e JAVA_OPTS=-Xmx256m -e RDS_ENDPOINT=" + $rds_host + " -e RDS_PASSWORD=" + $rds_pass + " " + $image)
+            ("docker run -d --name portfolio-app --network monitoring -p 8080:8080 -e SPRING_PROFILES_ACTIVE=prod -e JAVA_OPTS=-Xmx256m -e RDS_ENDPOINT=" + $rds_host + " -e RDS_PASSWORD=" + $rds_pass + " -e JWT_SECRET=" + $jwt_secret + " " + $image)
           ]}')
 
         aws ssm send-command \
