@@ -1,7 +1,7 @@
 # Backend Performance Portfolio
 
 백엔드 성능 개선 포트폴리오 프로젝트입니다.
-실제 운영 환경(EC2 + RDS + Redis)에서 **문제 발견 → 원인 분석 → 해결 → 수치 검증**의 흐름으로 6가지 성능 시나리오를 구현했습니다.
+AWS 환경(EC2 + RDS + Redis)에 배포해 **문제 발견 → 원인 분석 → 해결 → 수치 검증**의 흐름으로 6가지 성능 시나리오를 구현했습니다.
 
 > 상세 분석 문서: [`docs/performance-improvements.md`](docs/performance-improvements.md)
 
@@ -9,11 +9,11 @@
 
 ## 시스템 아키텍쳐
 
-![시스템 아키텍쳐](시스템 아키텍쳐.PNG)
+![시스템 아키텍쳐](시스템 아키텍쳐.png)
 
 ## 인프라 아키텍쳐
 
-![인프라 아키텍쳐](인프라 아키텍쳐-backend-portfolio.PNG)
+![인프라 아키텍쳐](인프라 아키텍쳐-backend-portfolio.png)
 
 ---
 
