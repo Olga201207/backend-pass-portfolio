@@ -14,7 +14,7 @@
 |---|---------|--------|-------|--------|
 | 1 | N+1 쿼리 (5개 호텔) | 6 queries | 1 query | 83% 감소 |
 | 2 | Bulk Insert (1440건) | 1,440회 개별 INSERT | 배치 단위 처리 | DB 왕복 대폭 감소 |
-| 3 | 동시성 제어 (100 VU / 50s) | Race Condition 발생 | 4개 전략 모두 join_success=30, 에러 0% | 비관적 p95 311ms / Redis Named p95 1,640ms |
+| 3 | 동시성 제어 (100 VU / 50s) | Race Condition 발생 | 4개 전략 모두 join_success=30, 에러 0% | 비관적 p95 311ms / Redis Named p95 1,647ms |
 | 4 | 통계 쿼리 (매 요청 집계) | 전체 집계 on-demand | 사전 집계 테이블 조회 | p95 목표 300ms |
 | 5 | 비동기 처리 (외부 API 4개) | avg 838ms / p95 927ms | avg 504ms / p95 606ms | 40% 감소 |
 | 6A | Cache Penetration (100 VU) | avg 49ms / p95 88ms (매 요청 DB 조회) | avg 17ms / p95 30ms (sentinel 캐시 히트) | 응답시간 65% 감소, DB 호출 99%+ 감소 |
@@ -282,8 +282,8 @@ MySQL Named Lock은 `GET_LOCK()`/`RELEASE_LOCK()`이 **세션(커넥션) 단위*
 1. Facade의 `@Transactional`이 트랜잭션 시작 시 커넥션 1개를 획득
 2. while 루프 내에서 락 획득 실패 시 `sleep(50ms)` 대기 → **커넥션을 점유한 채로 대기**
 3. `REQUIRES_NEW` 서비스 호출도 추가 커넥션 1개를 요구
-4. 100 VU × 2 커넥션 = 200개 필요 → HikariCP 기본 풀(10개)이 즉시 고갈
-5. 커넥션 대기 timeout(30초) 후 500 에러 → **에러율 84.77%**, p95 = 1m 0s (timeout)
+4. 100 VU × 2 커넥션 = 200개 필요 → HikariCP 풀(`maximum-pool-size: 32`)이 즉시 고갈
+5. 요청이 응답 없이 k6 기본 요청 타임아웃(60초)까지 대기 → **에러율 84.77%**, `iteration_duration` p95 = 1m 0s (timeout)
 
 `@Transactional`을 제거하면 세션 일관성이 깨져 `RELEASE_LOCK()`이 다른 커넥션에서 실행되어 락 해제가 불가능해지는 딜레마가 있었다.
 
@@ -333,7 +333,9 @@ public void joinEvent(Long eventId, Long memberId) throws InterruptedException {
 | 비관적 락 | **30** ✅ | 165ms | 311ms | 288.7/s | 0% | ✅ |
 | 낙관적 락 | **30** ✅ | 199ms | 384ms | 275.8/s | 0% | ✅ |
 | MySQL Named Lock | **30** ✅ | 515ms | 872ms | 129.7/s | 0% | ✅ |
-| Redis Named Lock | **30** ✅ | 600ms | 1,640ms | 114.1/s | 0% | ✅ |
+| Redis Named Lock | **30** ✅ | 600ms | 1,647ms | 114.1/s | 0% | ✅ |
+
+> 측정 일시: 2026-03-20 KST — 낙관적 16:18, MySQL Named 16:20, Redis Named 16:22, 비관적 16:30 시작 (각 50s)
 
 > `http_req_failed` 수치가 99%로 높게 보이는 것은 k6가 기본적으로 4xx 응답을 HTTP 실패로 집계하기 때문이다. 정원 초과 시 반환하는 400 응답이 대부분을 차지하며, 이는 의도된 동작이다. 비즈니스 로직 기준 에러율(`errors` 커스텀 메트릭)은 모두 0%이며, **4개 전략 모두 join_success = 정확히 30 — Race Condition 없이 정원 초과 0건을 증명**했다.
 
@@ -341,21 +343,23 @@ public void joinEvent(Long eventId, Long memberId) throws InterruptedException {
 - **비관적 락**: DB X-lock(`SELECT FOR UPDATE`)으로 순차 처리. 100 VU 중 정원 30명 이후 요청은 즉시 거절 → RPS 288.7로 가장 높은 처리량. 단, 멀티 인스턴스 환경에서도 DB 단에서 직렬화되므로 분산 환경에도 적합.
 - **낙관적 락**: `@Version` 체크로 충돌 감지, 실패 시 재시도. 정원이 이미 차면 재시도 없이 즉시 400 반환 → avg 199ms로 빠름. 충돌 빈도가 낮은 환경(저경합)에 최적.
 - **MySQL Named Lock**: Advisory Lock으로 직렬화. 커넥션을 락 보유 시간 동안 점유하므로 높은 동시성에서 커넥션 대기 발생 → avg 515ms, RPS 129.7/s. 단일 인스턴스·중간 트래픽 환경에서 사용.
-- **Redis Named Lock**: Redis `SET NX`로 분산 락 구현. 락 획득 재시도(최대 40회 × 5~20ms) 오버헤드로 p95 1,640ms. DB 커넥션 풀과 완전히 독립적으로 동작 → **다중 인스턴스·MSA 환경에서 유일한 선택지**.
+- **Redis Named Lock**: Redis `SET NX`로 분산 락 구현. 락 획득 재시도(최대 100회 × 50ms 고정 간격) 오버헤드로 p95 1,647ms. DB 커넥션 풀과 완전히 독립적으로 동작 → **다중 인스턴스·MSA 환경에서 유일한 선택지**.
 
 ### Grafana 모니터링 관측 (시나리오 3)
 
 k6 실행 중 Grafana 대시보드(#4701 JVM, #19004 Spring Boot Observability)에서 다음을 관측했다.
 
-**비관적 락 (16:51 KST 구간)**
+> 아래 Grafana 관측은 **2026-03-19** 동일 시나리오 실행분이다. 위 k6 실측 표(2026-03-20 재측정)와는 다른 실행이므로 수치를 직접 대응시키지 않는다. 3/19 실행 결과 파일: `k6-scripts/chapter4/results/scenario3_concurrency-*.json` (MySQL Named Lock 제외)
+
+**비관적 락 (2026-03-19 16:51 KST 구간)**
 - CPU Usage: 순간 99% spike → 즉시 하강. `SELECT FOR UPDATE`로 DB가 순차 처리하므로 CPU 급등 후 빠르게 안정화.
 - Threads: 100 VU 진입 시 ~110개로 증가, ramp-down 후 즉시 감소. 대기 없이 빠른 처리를 반영.
 
-**Redis Named Lock + 낙관적 락 (18:35, 18:45 KST 구간)**
+**Redis Named Lock + 낙관적 락 (2026-03-19 18:35, 18:45 KST 구간)**
 - CPU Usage: 2개의 독립적인 spike — 각 전략이 순차적으로 실행된 것을 시각적으로 구분 가능.
 - Threads: Redis Named Lock 구간에서 재시도 루프로 인해 스레드가 더 오래 활성화되는 패턴. 낙관적 락은 짧은 spike 후 즉시 감소.
 
-> 측정 결과 파일: `k6-scripts/chapter4/results/scenario3_concurrency-*.json`
+> k6 실측 표의 결과 파일: `k6-scripts/chapter4/results/scenario3_stress_*.json` (2026-03-20)
 
 ### k6 실행 명령어
 
