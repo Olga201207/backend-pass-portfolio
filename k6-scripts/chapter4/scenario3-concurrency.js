@@ -12,6 +12,7 @@
  * [STRATEGY 옵션]
  *   pessimistic  → SELECT FOR UPDATE (즉시 DB 잠금)
  *   optimistic   → @Version 낙관적 락 + 재시도
+ *   named        → MySQL GET_LOCK 네임드 락
  *   redis-named  → Redis setIfAbsent 분산 락
  *
  * [실행 방법]
