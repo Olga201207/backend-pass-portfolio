@@ -13,7 +13,7 @@ AWS 환경(EC2 + RDS + Redis)에 배포해 **문제 발견 → 원인 분석 →
 
 ## 인프라 아키텍쳐
 
-![인프라 아키텍쳐](<인프라 아키텍쳐-backend-portfolio.PNG>)
+![인프라 아키텍쳐](<infra-architecture.PNG>)
 
 ---
 
