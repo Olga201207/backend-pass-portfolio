@@ -300,7 +300,9 @@ MySQL Named Lock은 `GET_LOCK()`/`RELEASE_LOCK()`이 **세션(커넥션) 단위*
 
 `@Transactional`이 없으면 `getLock()`과 `releaseLock()`은 각각 별도 repository 호출이다. 그래서 HikariCP에서 서로 다른 커넥션을 받을 수 있다. `GET_LOCK`은 세션(커넥션) 단위라서, 다른 커넥션에서 `RELEASE_LOCK`을 호출하면 락이 풀리지 않고(Facade의 `락 해제 실패` 로그) 처음 커넥션에 남는다. 또 MySQL `GET_LOCK`은 같은 세션 안에서 재진입이 되므로, 락이 남은 커넥션을 다른 요청이 빌려 가면 그 요청도 락을 얻는다. 결국 이 구현은 Named Lock만으로 상호 배제를 보장하지 못한다(코드 기준 분석이며, 측정 중 해당 로그는 확인하지 않았다).
 
-제대로 하려면 락 전용 DataSource를 분리하거나, 락 획득부터 해제까지 커넥션 하나를 직접 잡고 써야 한다. 이번에는 거기까지 가지 않았다. 따라서 **결과 표의 MySQL Named Lock 수치를 "제대로 구현한 Named Lock의 성능"으로 읽어서는 안 된다.** 이 구현에서도 정원 초과가 0건이었던 이유는 아래 `@Version` 공유 단락을 참고한다.
+제대로 하려면 락 전용 DataSource를 분리하거나, 락 획득부터 해제까지 커넥션 하나를 직접 잡고 써야 한다. 이번에는 거기까지 가지 않았다. 그래서 **아래 결과 표의 MySQL Named Lock 수치는 상호 배제가 보장되지 않는 구현의 결과**이고, 두 가지로 제한해 읽어야 한다.
+- 응답시간·처리량은 이 구현의 값이다. 제대로 구현한 Named Lock의 성능으로 일반화할 수 없다.
+- 정원 초과 0건은 락만의 성과로 볼 수 없다. 락이 겹친 요청을 엔티티의 `@Version` 검사가 막았을 수 있다(아래 `@Version` 공유 단락).
 
 **전략 3-B. Redis Named Lock (분산 환경용 선택지)**
 
@@ -354,13 +356,14 @@ public void joinEvent(Long eventId, Long memberId) throws InterruptedException {
 
 > `http_req_failed` 수치가 99%로 높게 보이는 것은 k6가 기본적으로 4xx 응답을 HTTP 실패로 집계하기 때문이다. 정원 초과 시 반환하는 400 응답이 대부분을 차지하며, 이는 의도된 동작이다. 비즈니스 로직 기준 에러율(`errors` 커스텀 메트릭)은 모두 0%였다. **4개 전략 모두 200 응답이 정확히 30건(`join_success` = 정원)이었다. 즉 애플리케이션은 정원 수만큼만 참여를 통과시켰고, 나머지 요청은 모두 400으로 거절했다.** 측정 후 DB의 실제 참여자 수는 별도로 조회하지 않았다.
 
-> **`@Version` 공유 — 결과 해석 시 주의**
+> **`@Version` 공유 — MySQL Named Lock 결과 해석 시 주의**
 >
-> 네 전략은 모두 같은 `EventWithLock` 엔티티를 쓰고, 이 엔티티에는 최초 커밋부터 `@Version` 필드가 있다(`EventWithLock.java:32`). JPA는 버전 필드가 있는 엔티티를 UPDATE할 때 항상 버전 검사를 붙인다. 그래서 엄밀히 이 표는 **"락 + `@Version`" 조합 네 가지의 비교**다.
+> 네 전략은 모두 같은 `EventWithLock` 엔티티를 쓰고, 이 엔티티에는 최초 커밋부터 `@Version` 필드가 있다(`EventWithLock.java:32`). 이것이 결과 해석에 영향을 주는 것은 MySQL Named Lock 하나다. 이 경로의 `joinEventWithNamedLock`은 락 없이 `findById`로 조회한 뒤 `saveAndFlush`로 UPDATE한다. 그래서 3-A의 한계로 두 요청이 겹치면 한쪽이 버전 충돌로 실패한다. Facade는 `Exception` 전체를 잡아 재시도하므로 이 충돌은 응답에 드러나지 않는다. 결과를 어떻게 읽어야 하는지는 3-A에 정리했다.
 >
-> 특히 MySQL Named Lock과 Redis Named Lock 경로가 호출하는 `EventWithLockService.joinEventWithNamedLock`은 락 없이 `findById`로 조회한 뒤 `saveAndFlush`로 UPDATE한다. 그래서 락이 상호 배제에 실패해 두 요청이 겹쳐도, 한쪽은 버전 충돌로 실패한다. MySQL Named Lock Facade는 `Exception` 전체를 잡아 재시도하므로 이 충돌이 응답에 드러나지 않는다. 따라서 **"정원 초과 0건"을 락만의 성과로 읽으면 안 된다.** MySQL Named Lock은 위 3-A의 한계 때문에 `@Version`이 실제 안전장치 역할을 했을 수 있다.
->
-> 반면 Redis Facade는 버전 충돌을 잡지 않으므로, 충돌이 나면 `GlobalExceptionHandler`가 500을 반환해 `errors`에 집계된다. 3/20 Redis 실행의 `errors`는 0%였으므로, 그 실행에서는 버전 충돌 없이 Redis 락이 직렬화한 것으로 볼 수 있다.
+> 나머지 세 전략은 락만으로 설명된다.
+> - 비관적 락: `SELECT … FOR UPDATE`로 직렬화되므로 버전 충돌 자체가 발생하지 않는다.
+> - 낙관적 락: `@Version`이 곧 이 전략의 수단이다.
+> - Redis Named Lock: Facade가 버전 충돌을 잡지 않아, 충돌이 나면 `GlobalExceptionHandler`가 500을 반환하고 `errors`에 집계된다. 3/20 실행의 `errors`는 0%였다.
 
 **전략별 특성 분석**
 
@@ -368,7 +371,7 @@ public void joinEvent(Long eventId, Long memberId) throws InterruptedException {
 
 - **비관적 락**: DB X-lock(`SELECT FOR UPDATE`)으로 순차 처리. 정원이 찬 뒤의 거절 요청도 즉시 거절되지 않는다. `SELECT … FOR UPDATE`로 행 락을 순서대로 잡고 정원을 확인한 뒤에 거절된다(`EventWithLockService.joinEventPessimistic`). 그래도 거절 요청 하나가 실행하는 SQL은 2번(`SELECT … FOR UPDATE`, 회원 조회)으로 Named Lock(4번)의 절반이다. 이것이 RPS 288.7로 가장 높은 처리량을 낸 요인 중 하나다. 멀티 인스턴스라도 같은 DB를 공유하면 DB 단에서 직렬화되므로 분산 환경에도 적합하다.
 - **낙관적 락**: `@Version` 체크로 충돌 감지, 실패 시 재시도. 정원이 이미 차면 재시도 없이 즉시 400을 반환한다(`OptimisticLockEventFacade.java:25-27`). 행 락 대기도 없어서 avg 199ms로 빨랐다. 충돌 빈도가 낮은 환경(저경합)에 최적.
-- **MySQL Named Lock**: `GET_LOCK`(Advisory Lock)으로 직렬화를 시도한다. 수정 후 코드에서 Facade는 커넥션을 계속 쥐고 있지 않다. 대신 락 획득(`SELECT GET_LOCK`)과 해제(`SELECT RELEASE_LOCK`)가 작업 쿼리와 별도의 repository 호출로 나가서 요청당 DB 왕복이 2번 늘어난다. 전략 코드에서 나가는 SQL 기준으로, 정원 초과로 거절되는 요청은 비관적 락이 2번(`SELECT … FOR UPDATE`, 회원 조회)인 데 비해 Named Lock은 4번(`GET_LOCK`, 이벤트 조회, 회원 조회, `RELEASE_LOCK`)이다. 성공 요청은 4번 대 6번이다. 이번 실행에서는 거절 요청이 대부분이었다(`join_full` 6,480건). 여기에 `GET_LOCK` 대기(최대 3초)가 더해진 것이 avg 515ms, RPS 129.7/s의 배경이다. 다만 3-A에 적었듯 이 구현은 상호 배제를 보장하지 못하므로, **이 수치를 Named Lock 자체의 성능으로 일반화할 수 없다.**
+- **MySQL Named Lock**: `GET_LOCK`(Advisory Lock)으로 직렬화를 시도한다. 수정 후 코드에서 Facade는 커넥션을 계속 쥐고 있지 않다. 대신 락 획득(`SELECT GET_LOCK`)과 해제(`SELECT RELEASE_LOCK`)가 작업 쿼리와 별도의 repository 호출로 나가서 요청당 DB 왕복이 2번 늘어난다. 전략 코드에서 나가는 SQL 기준으로, 정원 초과로 거절되는 요청은 비관적 락이 2번(`SELECT … FOR UPDATE`, 회원 조회)인 데 비해 Named Lock은 4번(`GET_LOCK`, 이벤트 조회, 회원 조회, `RELEASE_LOCK`)이다. 성공 요청은 4번 대 6번이다. 이번 실행에서는 거절 요청이 대부분이었다(`join_full` 6,480건). 여기에 `GET_LOCK` 대기(최대 3초)가 더해진 것이 avg 515ms, RPS 129.7/s의 배경이다. 이 수치를 읽을 수 있는 범위는 3-A를 참고한다.
 - **Redis Named Lock**: Redis `SET NX`로 분산 락 구현. 락 획득 재시도(최대 100회 × 50ms 고정 간격) 대기가 p95 1,647ms의 주된 원인으로 보인다. 락 획득·대기는 DB 커넥션 풀과 무관하게 동작한다(참여 처리 자체는 DB를 쓴다). 인스턴스가 여러 대여도 같은 DB를 공유하면 비관적 락으로 직렬화할 수 있으므로, Redis 락은 **인스턴스들이 DB를 공유하지 않는 경우**나 **락 대기를 DB 밖으로 빼고 싶은 경우**에 고려할 선택지다.
 
 ### Grafana 모니터링 관측 (시나리오 3)
@@ -436,6 +439,8 @@ k6 run scenario3-concurrency.js --summary-export "results/scenario3_redis-named.
 ### 어필 포인트
 
 단순히 "락을 걸었다"가 아닌, **처리량 vs 안전성 vs 분산 환경 호환성**의 트레이드오프를 분석하고 케이스별 선택 근거를 제시했다. 낙관적 락에서 `saveAndFlush()` 순서 제어로 데드락을 방지하는 JPA 내부 동작 이해도를 함께 보여줬다.
+
+MySQL Named Lock 첫 구현에서는 100 VU 부하 테스트에서 커넥션 풀 고갈이 드러났다(에러율 84.77%, 60초 타임아웃). 요청당 커넥션 2개를 쓰는 코드 구조에서 원인을 찾았고, Facade의 `@Transactional`을 제거해 해결했다. 고친 뒤에도 `GET_LOCK`/`RELEASE_LOCK`이 다른 커넥션에서 실행될 수 있다는 한계가 남는다는 것을 코드에서 확인했다. 그래서 이 결과를 읽을 수 있는 범위를 문서에 함께 남겼다.
 
 ---
 
