@@ -32,6 +32,10 @@
  *   curl -X POST "$env:BASE_URL/chapter4/events/$env:EVENT_ID/reset"
  *   k6 run scenario3-concurrency.js --summary-export "results/scenario3_optimistic.json"
  *
+ *   $env:STRATEGY="named"
+ *   curl -X POST "$env:BASE_URL/chapter4/events/$env:EVENT_ID/reset"
+ *   k6 run scenario3-concurrency.js --summary-export "results/scenario3_named.json"
+ *
  *   $env:STRATEGY="redis-named"
  *   curl -X POST "$env:BASE_URL/chapter4/events/$env:EVENT_ID/reset"
  *   k6 run scenario3-concurrency.js --summary-export "results/scenario3_redis-named.json"
