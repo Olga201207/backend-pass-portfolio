@@ -288,6 +288,8 @@ MySQL Named Lock은 `GET_LOCK()`/`RELEASE_LOCK()`이 **세션(커넥션) 단위*
 4. 100 VU × 2 커넥션 = 200개 필요 → HikariCP 풀(`maximum-pool-size: 32`)이 즉시 고갈
 5. 요청이 응답 없이 k6 기본 요청 타임아웃(60초)까지 대기 → **에러율 84.77%**, `iteration_duration` p95 = 1m 0s (timeout)
 
+> 5단계의 결과(에러율 84.77%, `iteration_duration` p95 1m 0s)는 k6 캡처로 확인한 값이다. 출처는 `성능 평가 캡쳐/`의 시나리오 3 폴더에 있는 `3. K6_concurrency_redis_named-mysql_named_lock 에러.PNG`이다. 반면 원인인 커넥션 풀 고갈은 1~4단계의 코드 구조로 추정한 것이다. HikariCP 지표는 남기지 않았다.
+
 **수정: Facade의 `@Transactional` 제거 (커밋 `88677c7`, 2026-03-19 18:17 KST)**
 
 `NamedLockEventFacade.joinEvent`에서 `@Transactional`을 제거했다. Facade가 커넥션을 쥔 채 대기하지 않으므로 요청당 커넥션 2개 문제가 사라졌다. 이 커밋 이후 HEAD까지 시나리오 3 코드는 바뀌지 않았다.
@@ -326,7 +328,7 @@ public void joinEvent(Long eventId, Long memberId) throws InterruptedException {
 ```
 
 - Redis `setIfAbsent`는 DB 세션과 무관하게 원자적으로 동작 → 락 획득·해제가 DB 커넥션에 묶이지 않음
-- while 루프 중 DB 커넥션 미점유 → HikariCP 부하 없음
+- 락 대기 중에는 DB 커넥션을 쓰지 않음(락 확인은 Redis, 대기는 `Thread.sleep`). 락을 얻은 뒤 참여 처리(`joinEventWithNamedLock`) 중에는 다른 전략처럼 커넥션 1개를 쓴다
 - 분산 환경(멀티 인스턴스)에서도 동일하게 동작
 
 ### 개선 결과
@@ -336,8 +338,8 @@ public void joinEvent(Long eventId, Long memberId) throws InterruptedException {
 | 락 없음 (before) | 정원 초과 발생 | Race Condition |
 | 비관적 락 | 정원 초과 0건 | 즉시 DB 잠금, 데드락 주의 |
 | 낙관적 락 | 정원 초과 0건 | 재시도 로직 필요, 저충돌 최적 |
-| MySQL Named Lock | 정원 초과 0건 | DB 커넥션 유지 필요, 단일 인스턴스 적합 |
-| Redis Named Lock | 정원 초과 0건 | 분산 환경 적합, DB 커넥션 무관 |
+| MySQL Named Lock | 정원 초과 0건 | 올바른 구현은 락 전용 커넥션 유지 필요(이번 구현 미적용) |
+| Redis Named Lock | 정원 초과 0건 | 분산 환경 적합, 락 대기가 DB와 무관 |
 
 ### k6 실측 결과 (EC2 운영 환경, 100 VU / 50s, `scenario3-concurrency.js`)
 
@@ -350,7 +352,7 @@ public void joinEvent(Long eventId, Long memberId) throws InterruptedException {
 
 > 측정 일시: 2026-03-20 KST — 낙관적 16:18, MySQL Named 16:20, Redis Named 16:22, 비관적 16:30 시작 (각 50s)
 
-> `http_req_failed` 수치가 99%로 높게 보이는 것은 k6가 기본적으로 4xx 응답을 HTTP 실패로 집계하기 때문이다. 정원 초과 시 반환하는 400 응답이 대부분을 차지하며, 이는 의도된 동작이다. 비즈니스 로직 기준 에러율(`errors` 커스텀 메트릭)은 모두 0%이며, **4개 전략 모두 join_success = 정확히 30 — Race Condition 없이 정원 초과 0건을 증명**했다.
+> `http_req_failed` 수치가 99%로 높게 보이는 것은 k6가 기본적으로 4xx 응답을 HTTP 실패로 집계하기 때문이다. 정원 초과 시 반환하는 400 응답이 대부분을 차지하며, 이는 의도된 동작이다. 비즈니스 로직 기준 에러율(`errors` 커스텀 메트릭)은 모두 0%였다. **4개 전략 모두 200 응답이 정확히 30건(`join_success` = 정원)이었다. 즉 애플리케이션은 정원 수만큼만 참여를 통과시켰고, 나머지 요청은 모두 400으로 거절했다.** 측정 후 DB의 실제 참여자 수는 별도로 조회하지 않았다.
 
 > **`@Version` 공유 — 결과 해석 시 주의**
 >
@@ -361,14 +363,17 @@ public void joinEvent(Long eventId, Long memberId) throws InterruptedException {
 > 반면 Redis Facade는 버전 충돌을 잡지 않으므로, 충돌이 나면 `GlobalExceptionHandler`가 500을 반환해 `errors`에 집계된다. 3/20 Redis 실행의 `errors`는 0%였으므로, 그 실행에서는 버전 충돌 없이 Redis 락이 직렬화한 것으로 볼 수 있다.
 
 **전략별 특성 분석**
-- **비관적 락**: DB X-lock(`SELECT FOR UPDATE`)으로 순차 처리. 100 VU 중 정원 30명 이후 요청은 즉시 거절 → RPS 288.7로 가장 높은 처리량. 단, 멀티 인스턴스 환경에서도 DB 단에서 직렬화되므로 분산 환경에도 적합.
-- **낙관적 락**: `@Version` 체크로 충돌 감지, 실패 시 재시도. 정원이 이미 차면 재시도 없이 즉시 400 반환 → avg 199ms로 빠름. 충돌 빈도가 낮은 환경(저경합)에 최적.
-- **MySQL Named Lock**: `GET_LOCK`(Advisory Lock)으로 직렬화를 시도한다. 수정 후 코드에서 Facade는 커넥션을 계속 쥐고 있지 않다. 대신 락 획득(`SELECT GET_LOCK`)과 해제(`SELECT RELEASE_LOCK`)가 작업 쿼리와 별도의 repository 호출로 나가서 요청당 DB 왕복이 2번 늘어난다. 전략 코드에서 나가는 SQL 기준으로, 정원 초과로 거절되는 요청은 비관적 락이 2번(`SELECT … FOR UPDATE`, 회원 조회)인 데 비해 Named Lock은 4번(`GET_LOCK`, 이벤트 조회, 회원 조회, `RELEASE_LOCK`)이다. 성공 요청은 4번 대 6번이다. 이번 실행에서는 거절 요청이 대부분이었다(`join_full` 6,480건). 여기에 `GET_LOCK` 대기(최대 3초)가 더해져 avg 515ms, RPS 129.7/s가 나온 것으로 보인다(쿼리별 소요 시간은 측정하지 않음). 다만 3-A에 적었듯 이 구현은 상호 배제를 보장하지 못하므로, **이 수치를 Named Lock 자체의 성능으로 일반화할 수 없다.**
-- **Redis Named Lock**: Redis `SET NX`로 분산 락 구현. 락 획득 재시도(최대 100회 × 50ms 고정 간격) 오버헤드로 p95 1,647ms. 락 획득·대기는 DB 커넥션 풀과 무관하게 동작한다(참여 처리 자체는 DB를 쓴다). 인스턴스가 여러 대여도 같은 DB를 공유하면 비관적 락으로 직렬화할 수 있으므로, Redis 락은 **인스턴스들이 DB를 공유하지 않는 경우**나 **락 대기를 DB 밖으로 빼고 싶은 경우**에 고려할 선택지다.
+
+> 아래에서 요청당 SQL 수와 재시도·대기 방식은 코드로 확인한 사실이다. 그것이 응답시간·처리량 차이를 만들었다는 연결은 추정이다. 쿼리별 소요 시간과 재시도 횟수는 측정하지 않았다.
+
+- **비관적 락**: DB X-lock(`SELECT FOR UPDATE`)으로 순차 처리. 정원이 찬 뒤의 거절 요청도 즉시 거절되지 않는다. `SELECT … FOR UPDATE`로 행 락을 순서대로 잡고 정원을 확인한 뒤에 거절된다(`EventWithLockService.joinEventPessimistic`). 그래도 거절 요청 하나가 실행하는 SQL은 2번(`SELECT … FOR UPDATE`, 회원 조회)으로 Named Lock(4번)의 절반이다. 이것이 RPS 288.7로 가장 높은 처리량을 낸 요인 중 하나다. 멀티 인스턴스라도 같은 DB를 공유하면 DB 단에서 직렬화되므로 분산 환경에도 적합하다.
+- **낙관적 락**: `@Version` 체크로 충돌 감지, 실패 시 재시도. 정원이 이미 차면 재시도 없이 즉시 400을 반환한다(`OptimisticLockEventFacade.java:25-27`). 행 락 대기도 없어서 avg 199ms로 빨랐다. 충돌 빈도가 낮은 환경(저경합)에 최적.
+- **MySQL Named Lock**: `GET_LOCK`(Advisory Lock)으로 직렬화를 시도한다. 수정 후 코드에서 Facade는 커넥션을 계속 쥐고 있지 않다. 대신 락 획득(`SELECT GET_LOCK`)과 해제(`SELECT RELEASE_LOCK`)가 작업 쿼리와 별도의 repository 호출로 나가서 요청당 DB 왕복이 2번 늘어난다. 전략 코드에서 나가는 SQL 기준으로, 정원 초과로 거절되는 요청은 비관적 락이 2번(`SELECT … FOR UPDATE`, 회원 조회)인 데 비해 Named Lock은 4번(`GET_LOCK`, 이벤트 조회, 회원 조회, `RELEASE_LOCK`)이다. 성공 요청은 4번 대 6번이다. 이번 실행에서는 거절 요청이 대부분이었다(`join_full` 6,480건). 여기에 `GET_LOCK` 대기(최대 3초)가 더해진 것이 avg 515ms, RPS 129.7/s의 배경이다. 다만 3-A에 적었듯 이 구현은 상호 배제를 보장하지 못하므로, **이 수치를 Named Lock 자체의 성능으로 일반화할 수 없다.**
+- **Redis Named Lock**: Redis `SET NX`로 분산 락 구현. 락 획득 재시도(최대 100회 × 50ms 고정 간격) 대기가 p95 1,647ms의 주된 원인으로 보인다. 락 획득·대기는 DB 커넥션 풀과 무관하게 동작한다(참여 처리 자체는 DB를 쓴다). 인스턴스가 여러 대여도 같은 DB를 공유하면 비관적 락으로 직렬화할 수 있으므로, Redis 락은 **인스턴스들이 DB를 공유하지 않는 경우**나 **락 대기를 DB 밖으로 빼고 싶은 경우**에 고려할 선택지다.
 
 ### Grafana 모니터링 관측 (시나리오 3)
 
-k6 실행 중 Grafana 대시보드(#4701 JVM, #19004 Spring Boot Observability)에서 다음을 관측했다.
+k6 실행 중 Grafana 대시보드(#4701 JVM, #19004 Spring Boot Observability)에서 다음을 관측했다. 그래프의 모양과 수치는 캡처로 확인한 것이다. 각 항목의 원인 해석("~하므로", "~로 인해")은 앱 CPU·스레드 그래프만 근거로 한 추정이다.
 
 > 아래 Grafana 관측은 **2026-03-19** 동일 시나리오 실행분이다. 위 k6 실측 표(2026-03-20 재측정)와는 다른 실행이므로 수치를 직접 대응시키지 않는다. 3/19 실행 결과 파일: `k6-scripts/chapter4/results/scenario3_concurrency-*.json` (MySQL Named Lock 제외)
 
