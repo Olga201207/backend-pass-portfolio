@@ -49,4 +49,4 @@ terraform.tfvars
 .env
 
 # k6 test results
-k6-scripts/**/results/
+k6-scripts/**/results/.claude/
