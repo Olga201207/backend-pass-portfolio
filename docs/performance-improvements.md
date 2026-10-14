@@ -206,7 +206,7 @@ ORM 편의성(`save()`)이 가진 성능 함정을 인지하고, 대용량 처�
 
 ### 문제 상황
 
-선착순 이벤트 참여 API에 100명이 동시에 요청을 보낼 때, 여러 트랜잭션이 동시에 잔여 정원을 읽고 참여자 수를 증가시키면서 Race Condition이 발생했다. 정원이 30명인 이벤트에 30명 이상이 참여하는 데이터 정합성 문제가 생겼다.
+선착순 이벤트 참여 API에 동시 요청이 몰릴 때, 여러 트랜잭션이 동시에 잔여 정원을 읽고 참여자 수를 증가시키면서 Race Condition이 발생했다. 정원이 30인 이벤트에 참가 등록이 30건을 넘는 데이터 정합성 문제가 생겼다.
 
 ### 원인 분석
 
@@ -216,7 +216,7 @@ ORM 편의성(`save()`)이 가진 성능 함정을 인지하고, 대용량 처�
 // ConcurrentTestUtil: 동시성 시나리오 재현
 ExecutorService executor = Executors.newFixedThreadPool(32);
 CountDownLatch latch = new CountDownLatch(100);
-// 100명 동시 참여 요청 → Race Condition 발생 확인
+// 서로 다른 테스트 회원 100명의 동시 참여 요청 → Race Condition 발생 확인
 ```
 
 ### 해결 방법
@@ -227,7 +227,7 @@ CountDownLatch latch = new CountDownLatch(100);
 ```java
 @Transactional
 public void joinEventPessimistic(Long eventId, Long memberId) {
-    // SELECT ... FOR UPDATE → 즉시 배타락 획득
+    // SELECT ... FOR UPDATE → 조회 시점에 배타락 요청 (선행 트랜잭션이 있으면 커밋까지 대기)
     EventWithLock event = eventRepository.findByIdWithPessimisticLock(eventId)
             .orElseThrow(...);
     event.increaseParticipants();
@@ -335,10 +335,10 @@ public void joinEvent(Long eventId, Long memberId) throws InterruptedException {
 
 ### 개선 결과
 
-| 전략 | 100 concurrent 결과 | 특징 |
+| 전략 | 동시 요청 100개 결과 | 특징 |
 |------|-------------------|------|
 | 락 없음 (before) | 정원 초과 발생 | Race Condition |
-| 비관적 락 | 정원 초과 0건 | 즉시 DB 잠금, 데드락 주의 |
+| 비관적 락 | 정원 초과 0건 | 조회 시점에 행 잠금(선행 트랜잭션 대기), 데드락 주의 |
 | 낙관적 락 | 정원 초과 0건 | 재시도 로직 필요, 저충돌 최적 |
 | MySQL Named Lock | 정원 초과 0건 | 올바른 구현은 락 전용 커넥션 유지 필요(이번 구현 미적용) |
 | Redis Named Lock | 정원 초과 0건 | 분산 환경 적합, 락 대기가 DB와 무관 |
@@ -354,7 +354,9 @@ public void joinEvent(Long eventId, Long memberId) throws InterruptedException {
 
 > 측정 일시: 2026-03-20 KST — 낙관적 16:18, MySQL Named 16:20, Redis Named 16:22, 비관적 16:30 시작 (각 50s)
 
-> `http_req_failed` 수치가 99%로 높게 보이는 것은 k6가 기본적으로 4xx 응답을 HTTP 실패로 집계하기 때문이다. 정원 초과 시 반환하는 400 응답이 대부분을 차지하며, 이는 의도된 동작이다. 비즈니스 로직 기준 에러율(`errors` 커스텀 메트릭)은 모두 0%였다. **4개 전략 모두 200 응답이 정확히 30건(`join_success` = 정원)이었다. 즉 애플리케이션은 정원 수만큼만 참여를 통과시켰고, 나머지 요청은 모두 400으로 거절했다.** 측정 후 DB의 실제 참여자 수는 별도로 조회하지 않았다.
+> 측정 조건: 부하는 테스트 계정 1개로 `setup()`에서 한 번 로그인해 받은 토큰을 100 VU가 공유해 보낸 것이다. 서로 다른 회원 100명이 아니라, 같은 이벤트의 참여자 수 카운터를 두고 경쟁하는 동시 요청 100개를 재현한 측정이다. 따라서 `join_success` 30은 같은 회원의 참가 등록 30건이다. 이번 구현에는 중복 참여 방지가 없다. 참여자 엔티티에 (event, member) 유니크 제약이 없고, 서비스에도 기존 참여 여부를 확인하는 로직이 없다.
+
+> `http_req_failed` 수치가 99%로 높게 보이는 것은 k6가 기본적으로 4xx 응답을 HTTP 실패로 집계하기 때문이다. 정원 초과 시 반환하는 400 응답이 대부분을 차지하며, 이는 의도된 동작이다. 비즈니스 로직 기준 에러율(`errors` 커스텀 메트릭)은 모두 0%였다. **4개 전략 모두 200 응답(참가 등록)이 정확히 30건으로, 정원(`maxParticipants` 30)과 같았다. 즉 애플리케이션은 정원만큼만 등록을 통과시켰고, 나머지 요청은 모두 400으로 거절했다.** 측정 후 DB의 실제 참여자 수는 별도로 조회하지 않았다.
 
 > **`@Version` 공유 — MySQL Named Lock 결과 해석 시 주의**
 >
